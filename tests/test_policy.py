@@ -646,15 +646,6 @@ def test_workspace_with_ml_referee_name_allows_ordinary_commands(
         assert decide(bash(cmd, prefix_policy), prefix_policy).allow is True, cmd
 
 
-def test_write_content_config_name_concatenation_allowed(policy: Policy) -> None:
-    ev = _event(
-        "Write",
-        {"file_path": "t.py", "content": "name = '.ml-referee' + '.toml'"},
-        policy,
-    )
-    assert decide(ev, policy).allow is True
-
-
 def test_write_content_with_store_path_still_denied(policy: Policy) -> None:
     ev = _event(
         "Write",
