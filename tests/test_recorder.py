@@ -150,3 +150,83 @@ def test_main_without_config_writes_nothing(
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(event)))
     assert main() == 0
     assert not xdg.exists()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd x && python train.py",
+        "cd x; python train.py --lr 1",
+        "false || python train.py",
+        "make data | python train.py",
+        "FOO=1 BAR=2 python train.py",
+        "nohup python train.py",
+        "env FOO=1 python train.py",
+        "time python train.py",
+        "nice -n 5 python train.py",
+        "bash -c 'python train.py'",
+        "python   train.py",
+        "echo start\npython train.py --lr 1",
+    ],
+)
+def test_wrapped_or_compound_command_recorded(tmp_path: Path, command: str) -> None:
+    cfg, ledger = _setup(tmp_path)
+    rec = record(_event(command), cfg, ledger)
+    assert rec is not None
+    assert rec.kind == "trial"
+    assert rec.payload["command"] == command
+    assert len(ledger.records()) == 1
+
+
+@pytest.mark.parametrize(
+    "command", ["echo python train.py", "cat train.py", "python other.py"]
+)
+def test_lookalike_command_not_recorded(tmp_path: Path, command: str) -> None:
+    cfg, ledger = _setup(tmp_path)
+    assert record(_event(command), cfg, ledger) is None
+    assert ledger.records() == []
+
+
+def _run_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdin_text: str
+) -> int:
+    monkeypatch.setattr("sys.stdin", io.StringIO(stdin_text))
+    return main()
+
+
+def test_main_malformed_json_returns_zero_with_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert _run_main(tmp_path, monkeypatch, "{not json") == 0
+    assert capsys.readouterr().err.strip() != ""
+
+
+def test_main_ledger_append_failure_warns_on_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg, _ = _setup(tmp_path)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    os.makedirs(store_dir(cfg))
+    (store_dir(cfg) / "ledger.jsonl").write_text("corrupted\n")
+    event = _event("python train.py")
+    event["cwd"] = str(tmp_path)
+    assert _run_main(tmp_path, monkeypatch, json.dumps(event)) == 0
+    assert "ml-referee" in capsys.readouterr().err
+
+
+def test_main_without_config_stderr_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    work = tmp_path / "work"
+    work.mkdir()
+    event = _event("python train.py")
+    event["cwd"] = str(work)
+    assert _run_main(tmp_path, monkeypatch, json.dumps(event)) == 0
+    assert capsys.readouterr().err == ""
