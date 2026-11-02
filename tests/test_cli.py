@@ -171,7 +171,9 @@ def test_verify_ledger_exit_codes(ws: Path, capsys: pytest.CaptureFixture[str]) 
     text = path.read_text()
     path.write_text(text.replace('"seed": 1', '"seed": 2'))
     assert main(["verify-ledger"]) == 1
-    assert capsys.readouterr().out.strip() or True
+    out = capsys.readouterr().out.strip()
+    result = json.loads(out)
+    assert result["ok"] is False
 
 
 def test_claim_writes_out_file(ws: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -222,3 +224,29 @@ def test_end_to_end_seal_eval_claim(
     assert "Selection gap" in out
     assert main(["claim", "--predictions", str(preds)]) == 1
     assert capsys.readouterr().err
+
+
+def test_claim_clean_data_does_not_say_findings_supplied(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seal(ws, capsys)
+    code = main(["claim", "--predictions", str(_preds(ws))])
+    report = capsys.readouterr().out
+    assert code == 0
+    assert "## Audit findings" in report
+    assert "No audit findings supplied." not in report
+
+
+def test_claim_reports_duplicate_findings(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    train = ws / "data" / "train.csv"
+    df = pd.read_csv(train)
+    pd.concat([df, df], ignore_index=True).to_csv(train, index=False)
+    _seal(ws, capsys)
+    code = main(["claim", "--predictions", str(_preds(ws))])
+    report = capsys.readouterr().out
+    assert code == 0
+    section = report.split("## Audit findings")[1].split("## Limits")[0]
+    assert "- high: duplicates:" in section
+    assert "No audit findings supplied." not in report
