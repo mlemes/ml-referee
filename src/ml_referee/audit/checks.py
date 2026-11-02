@@ -116,13 +116,17 @@ def _scope_nodes(node: ast.AST) -> list[ast.AST]:
 
 
 def _data_names(node: ast.AST) -> set[str]:
-    """Collect data dependencies, excluding callees and subscript selectors."""
+    """Collect data dependencies, including receivers but excluding bare callees."""
     if isinstance(node, ast.Name):
         return {node.id}
     if isinstance(node, ast.Subscript):
         return _data_names(node.value)
     children = (
-        [*node.args, *(keyword.value for keyword in node.keywords)]
+        [
+            *([node.func.value] if isinstance(node.func, ast.Attribute) else []),
+            *node.args,
+            *(keyword.value for keyword in node.keywords),
+        ]
         if isinstance(node, ast.Call)
         else ast.iter_child_nodes(node)
     )
