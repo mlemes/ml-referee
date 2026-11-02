@@ -50,13 +50,23 @@ class Policy:
                     str(self.store.parent.parent),
                     "ml-referee",
                     ".local/share",
+                    "~/.local",
+                    "/.local",
                     "XDG_DATA_HOME",
+                    *(
+                        str(parent)
+                        for parent in self.store.parents
+                        if parent != Path("/")
+                        and parent != self.workspace
+                        and parent not in self.workspace.parents
+                    ),
                 )
             ) or re.search(r"\.local.*share", value):
                 return True
         for token in shlex.split(text, posix=True):
-            if glob.has_magic(token):
-                value = _expand(token, dict(os.environ))
+            pattern = token.split("=", 1)[-1]
+            if glob.has_magic(pattern):
+                value = _expand(pattern, dict(os.environ))
                 for match in glob.iglob(str(self.workspace / value)):  # noqa: PTH207
                     resolved = Path(match).resolve()
                     if (
@@ -116,7 +126,19 @@ def decide(event: dict[str, object], policy: Policy) -> Decision:  # noqa: C901,
             if name == "Bash" and key == "command":
                 tokens = shlex.split(value, posix=True)
                 simple = not any(char in value for char in ";&|<>()`\n$")
-                if ".ml-referee.toml" in value:
+                config_glob = any(
+                    Path(match).resolve()
+                    == (policy.workspace / ".ml-referee.toml").resolve()
+                    for token in tokens
+                    if glob.has_magic(token)
+                    for match in glob.iglob(  # noqa: PTH207
+                        str(
+                            active.workspace
+                            / _expand(token.split("=", 1)[-1], dict(os.environ)),
+                        ),
+                    )
+                )
+                if ".ml-referee.toml" in value or config_glob:
                     if not (
                         simple
                         and tokens
