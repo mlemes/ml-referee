@@ -1,9 +1,10 @@
+import os
 from pathlib import Path
 
 import pytest
 
 from ml_referee.config import load_config, store_dir
-from ml_referee.policy import Policy, build_policy, decide
+from ml_referee.policy import Decision, Policy, build_policy, decide
 
 TOML = """
 [project]
@@ -130,7 +131,7 @@ def test_glob_pattern_under_store_denied(policy: Policy) -> None:
 
 
 @pytest.mark.parametrize(
-    "cmd", ["python train.py", "pytest -q", "ml-referee eval predictions.csv"]
+    "cmd", ["python train.py", "pytest -q", "ml-referee eval predictions.csv"],
 )
 def test_workspace_commands_allowed(cmd: str, policy: Policy) -> None:
     assert decide(bash(cmd, policy), policy).allow is True
@@ -177,7 +178,7 @@ BYPASS_CMDS = [
     'dd if=<share>/ml-"referee"/proj1/holdout.parquet',
     # (4) env --chdir
     'env --chdir=~/.local/share/ml-"referee"/proj1 cat holdout.parquet',
-    'env --chdir=<store> cat holdout.parquet',
+    "env --chdir=<store> cat holdout.parquet",
     # (5) brace expansion
     "cat ~/.local/share/ml-{referee,x}/proj1/holdout.parquet",
     "cat <share>/ml-{referee,x}/proj1/holdout.parquet",
@@ -258,7 +259,7 @@ def test_edit_new_string_with_store_path_denied(policy: Policy) -> None:
     ],
 )
 def test_search_and_read_tools_on_store_parent_denied(
-    name: str, key: str, value: str, policy: Policy
+    name: str, key: str, value: str, policy: Policy,
 ) -> None:
     ev = tool(name, key, fill(value, policy), policy)
     d = decide(ev, policy)
@@ -332,7 +333,79 @@ def test_bash_copy_of_store_ancestors_denied(policy: Policy) -> None:
 
 
 @pytest.mark.parametrize(
-    "cmd", ["ls .ml*", "cat .ml-referee.toml", "rm build/*.pyc"]
+    "cmd", ["ls .ml*", "cat .ml-referee.toml", "rm build/*.pyc"],
 )
 def test_config_glob_benign_allowed(cmd: str, policy: Policy) -> None:
     assert decide(bash(cmd, policy), policy).allow is True
+
+
+# --- symlink handling ---
+
+
+def _ws_file(policy: Policy, name: str, text: str = "a,b\n1,2\n") -> Path:
+    p = policy.workspace / name
+    p.write_text(text)
+    return p
+
+
+def _link(policy: Policy, name: str, target: Path) -> Path:
+    p = policy.workspace / name
+    os.symlink(target, p)
+    return p
+
+
+@pytest.mark.parametrize(
+    "cmd", ["cat link", "cat ./link", "head -c 10 link"],
+)
+def test_bash_symlink_to_store_file_denied(cmd: str, policy: Policy) -> None:
+    _link(policy, "link", policy.store / "holdout.parquet")
+    assert decide(bash(cmd, policy), policy).allow is False
+
+
+@pytest.mark.parametrize(
+    ("name", "key"), [("Read", "file_path"), ("Grep", "path")],
+)
+def test_tools_symlink_to_store_file_denied(
+    name: str, key: str, policy: Policy,
+) -> None:
+    link = _link(policy, "link", policy.store / "holdout.parquet")
+    assert decide(tool(name, key, str(link), policy), policy).allow is False
+
+
+def test_glob_symlink_to_store_file_denied(policy: Policy) -> None:
+    link = _link(policy, "link", policy.store / "holdout.parquet")
+    assert decide(tool("Glob", "pattern", str(link), policy), policy).allow is False
+
+
+@pytest.mark.parametrize("cmd", ["ls link/", "cat link/holdout.parquet"])
+def test_bash_directory_symlink_to_store_denied(cmd: str, policy: Policy) -> None:
+    _link(policy, "link", policy.store)
+    assert decide(bash(cmd, policy), policy).allow is False
+
+
+@pytest.mark.parametrize("name", ["Write", "Edit"])
+def test_write_edit_symlink_to_store_denied(name: str, policy: Policy) -> None:
+    link = _link(policy, "link", policy.store / "evaluator.py")
+    assert decide(tool(name, "file_path", str(link), policy), policy).allow is False
+
+
+def test_nested_symlink_chain_denied(policy: Policy) -> None:
+    link = _link(policy, "link", policy.store / "holdout.parquet")
+    _link(policy, "link2", link)
+    assert decide(bash("cat link2", policy), policy).allow is False
+
+
+def test_symlink_to_workspace_file_allowed(policy: Policy) -> None:
+    train = _ws_file(policy, "train.csv")
+    _link(policy, "okay_link", train)
+    assert decide(bash("cat okay_link", policy), policy).allow is True
+
+
+def test_plain_cat_workspace_file_allowed(policy: Policy) -> None:
+    _ws_file(policy, "train.csv")
+    assert decide(bash("cat train.csv", policy), policy).allow is True
+
+
+def test_dangling_symlink_does_not_crash(policy: Policy) -> None:
+    _link(policy, "dangling", policy.workspace / "nonexistent")
+    assert isinstance(decide(bash("cat dangling", policy), policy), Decision)
