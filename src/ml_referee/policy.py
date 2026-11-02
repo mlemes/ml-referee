@@ -50,6 +50,7 @@ class Policy:
 
     store: Path
     workspace: Path
+    cwd: Path | None = None
 
     def touches_sealed(self, path_or_command: str) -> bool:
         """Return True if the path or shell command may reach the store."""
@@ -60,6 +61,18 @@ class Policy:
 
     def substring_touches(self, text: str) -> bool:
         """Scan literal text without shell parsing or filesystem expansion."""
+        workspace = self.workspace.resolve()
+        store = self.store.resolve()
+        if not (
+            store == workspace
+            or store in workspace.parents
+            or workspace in store.parents
+        ):
+            for marker in sorted(
+                {str(self.workspace), str(workspace)}, key=len, reverse=True,
+            ):
+                text = text.replace(marker, "")
+        text = text.replace(".ml-referee.toml", "")
         normalized = re.sub(r"[^A-Za-z0-9_./~$-]", "", text)
         for value in (text, normalized):
             if any(
@@ -81,17 +94,7 @@ class Policy:
                 )
             ) or re.search(r"\.local.*share", value):
                 return True
-            stripped = value
-            for marker in sorted(
-                {
-                    str(self.workspace), str(self.workspace.resolve()),
-                    ".ml-referee.toml",
-                },
-                key=len,
-                reverse=True,
-            ):
-                stripped = stripped.replace(marker, "")
-            if "ml-referee" in stripped:
+            if "ml-referee" in value:
                 return True
         return False
 
@@ -104,11 +107,13 @@ class Policy:
             tokens = text.split()
         for token in tokens:
             pattern = token.split("=", 1)[-1]
-            if _resolved_touches(pattern, self.store, self.workspace, self.workspace):
+            if _resolved_touches(
+                pattern, self.store, self.workspace, self.cwd or self.workspace,
+            ):
                 return True
             if glob.has_magic(pattern):
                 value = _expand(pattern, dict(os.environ))
-                for match in glob.iglob(str(self.workspace / value)):  # noqa: PTH207
+                for match in glob.iglob(str((self.cwd or self.workspace) / value)):  # noqa: PTH207
                     resolved = Path(match).resolve()
                     if (
                         resolved == self.store
@@ -149,7 +154,7 @@ def decide(event: dict[str, object], policy: Policy) -> Decision:  # noqa: C901,
     if not isinstance(cwd, str):
         return denied
     try:
-        active = Policy(policy.store, _resolve(cwd, policy.workspace))
+        active = Policy(policy.store, policy.workspace, _resolve(cwd, policy.workspace))
         required = {
             "Bash": "command",
             "Read": "file_path",
@@ -181,7 +186,7 @@ def decide(event: dict[str, object], policy: Policy) -> Decision:  # noqa: C901,
                     if glob.has_magic(token)
                     for match in glob.iglob(  # noqa: PTH207
                         str(
-                            active.workspace
+                            (active.cwd or active.workspace)
                             / _expand(token.split("=", 1)[-1], dict(os.environ)),
                         ),
                     )
@@ -214,12 +219,14 @@ def decide(event: dict[str, object], policy: Policy) -> Decision:  # noqa: C901,
                     _expand(value, dict(os.environ)),
                     policy.store,
                     policy.workspace,
-                    active.workspace,
+                    active.cwd or active.workspace,
                 )
             ):
                 return denied
             if name in {"Write", "Edit"} and key == "file_path":
-                path = _resolve(_expand(value, dict(os.environ)), active.workspace)
+                path = _resolve(
+                    _expand(value, dict(os.environ)), active.cwd or active.workspace,
+                )
                 if path == (policy.workspace / ".ml-referee.toml").resolve():
                     return denied
     except (OSError, RuntimeError, ValueError):

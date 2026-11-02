@@ -35,8 +35,6 @@ def _segments(command: str) -> list[str]:
 
 def record(event: dict[str, object], cfg: Config, ledger: Ledger) -> Record | None:
     """Append a trial record when the event is a matching Bash command."""
-    if not (store_dir(cfg) / "manifest.json").exists():
-        return None
     inputs = event.get("tool_input")
     if event.get("tool_name") != "Bash" or not isinstance(inputs, dict):
         return None
@@ -75,7 +73,8 @@ def main() -> int:
         config = find_config(Path(event["cwd"]))
         if config is not None:
             cfg = load_config(config)
-            record(event, cfg, Ledger(store_dir(cfg) / "ledger.jsonl"))
+            if (store_dir(cfg) / "manifest.json").exists():
+                record(event, cfg, Ledger(store_dir(cfg) / "ledger.jsonl"))
     except BaseException as exc:  # noqa: BLE001
         # Recording must never interrupt the caller, even on malformed input.
         try:

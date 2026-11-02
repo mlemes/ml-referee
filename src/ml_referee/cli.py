@@ -82,6 +82,9 @@ def _run(args: argparse.Namespace, cfg: Config) -> int:  # noqa: C901, PLR0912
             if output == directory or directory in output.parents:
                 msg = "Claim output must be outside the sealed store"
                 raise ValueError(msg)
+            if output.is_dir() or (output.exists() and not os.access(output, os.W_OK)):
+                msg = "Claim output must be a writable file"
+                raise ValueError(msg)
             if not output.parent.is_dir() or not os.access(output.parent, os.W_OK):
                 msg = "Claim output parent must exist and be writable"
                 raise ValueError(msg)
