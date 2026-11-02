@@ -318,3 +318,30 @@ def test_audit_output_has_no_holdout_label_values(
         for value in hold["y"].unique():
             assert f"y={value}" not in detail
             assert f"label {value}" not in detail
+
+
+def test_claim_out_directory_exits_one_then_good_out_succeeds(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seal(ws, capsys)
+    preds = _preds(ws)
+    d = ws / "outdir"
+    d.mkdir()
+    assert main(["claim", "--predictions", str(preds), "--out", str(d)]) == 1
+    assert _ledger(ws).eval_count() == 0
+    good = ws / "report.md"
+    assert main(["claim", "--predictions", str(preds), "--out", str(good)]) == 0
+    assert _ledger(ws).eval_count() == 1
+
+
+def test_claim_out_readonly_file_exits_one_without_budget(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seal(ws, capsys)
+    preds = _preds(ws)
+    ro = ws / "ro.md"
+    ro.write_text("old")
+    ro.chmod(0o400)
+    assert main(["claim", "--predictions", str(preds), "--out", str(ro)]) == 1
+    assert ro.read_text() == "old"
+    assert _ledger(ws).eval_count() == 0

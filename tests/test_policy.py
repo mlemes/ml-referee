@@ -438,7 +438,6 @@ def test_demo_workspace_path_contains_name(demo_policy: Policy) -> None:
     [
         "cat {ws}/train.csv",
         "python {ws}/train.py",
-        "{ws}/.venv/bin/ml-referee eval predictions.csv",
         "ls {ws}",
     ],
 )
@@ -446,6 +445,10 @@ def test_bash_in_ml_referee_named_workspace_allowed(
     cmd: str, demo_policy: Policy
 ) -> None:
     ev = bash(cmd.format(ws=demo_policy.workspace), demo_policy)
+    assert decide(ev, demo_policy).allow is True
+    sub = demo_policy.workspace / "sub"
+    sub.mkdir()
+    ev["cwd"] = str(sub)
     assert decide(ev, demo_policy).allow is True
 
 
@@ -529,3 +532,47 @@ def test_bash_comment_with_apostrophe_allowed(policy: Policy) -> None:
 @pytest.mark.parametrize("cmd", ['echo "/* c */"', 'echo "/* comment */"', "ls /*"])
 def test_slash_star_token_not_store_ancestor_hit(cmd: str, policy: Policy) -> None:
     assert decide(bash(cmd, policy), policy).allow is True
+
+
+def _mk_policy(ws: Path) -> Policy:
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / ".ml-referee.toml").write_text(TOML)
+    cfg = load_config(ws / ".ml-referee.toml")
+    store = store_dir(cfg)
+    store.mkdir(parents=True)
+    (store / "holdout.parquet").write_text("x")
+    return build_policy(cfg, ws)
+
+
+def test_workspace_ancestor_of_store_still_denies_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = tmp_path / "ml-referee-ws"
+    monkeypatch.setenv("XDG_DATA_HOME", str(ws / "xdg"))
+    pol = _mk_policy(ws)
+    assert pol.store.is_relative_to(pol.workspace)
+    for cmd in (
+        f"cat {pol.store}/holdout.parquet",
+        f"cat {ws}/x {pol.store}/holdout.parquet",
+        f"cd {pol.store} && ls",
+    ):
+        assert decide(bash(cmd, pol), pol).allow is False, cmd
+
+
+def test_cwd_store_parent_denied(
+    demo_policy: Policy,
+) -> None:
+    ev = bash(f"cat {demo_policy.store}/holdout.parquet", demo_policy)
+    ev["cwd"] = str(demo_policy.store.parent)
+    assert decide(ev, demo_policy).allow is False
+    ev = bash(f"ls {demo_policy.store.parent}", demo_policy)
+    ev["cwd"] = str(demo_policy.store.parent)
+    assert decide(ev, demo_policy).allow is False
+
+
+def test_quote_trick_next_to_workspace_path_denied(demo_policy: Policy) -> None:
+    cmd = (
+        f"cat {demo_policy.workspace}/x "
+        '~/.local/share/ml-"referee"/proj1/holdout.parquet'
+    )
+    assert decide(bash(cmd, demo_policy), demo_policy).allow is False
