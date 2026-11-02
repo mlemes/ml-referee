@@ -127,6 +127,7 @@ def test_main_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     cfg, _ = _setup(tmp_path)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     os.makedirs(store_dir(cfg))
+    (store_dir(cfg) / "manifest.json").write_text("{}")
     sub = tmp_path / "sub" / "dir"
     sub.mkdir(parents=True)
     event = _event("python train.py --x 1")
@@ -212,6 +213,7 @@ def test_main_ledger_append_failure_warns_on_stderr(
     cfg, _ = _setup(tmp_path)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     os.makedirs(store_dir(cfg))
+    (store_dir(cfg) / "manifest.json").write_text("{}")
     (store_dir(cfg) / "ledger.jsonl").write_text("corrupted\n")
     event = _event("python train.py")
     event["cwd"] = str(tmp_path)

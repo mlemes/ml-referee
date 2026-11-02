@@ -576,3 +576,89 @@ def test_quote_trick_next_to_workspace_path_denied(demo_policy: Policy) -> None:
         '~/.local/share/ml-"referee"/proj1/holdout.parquet'
     )
     assert decide(bash(cmd, demo_policy), demo_policy).allow is False
+
+
+# --- cwd above the store, prefix workspaces, content concatenations ---
+
+
+def _cwd_event(cmd: str, cwd: Path) -> dict[str, object]:
+    return {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(cwd)}
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "ls",
+        "find . -name holdout.parquet -exec cat {} +",
+        "python -c \"print(open('proj1/holdout.parquet').read())\"",
+    ],
+)
+def test_bash_cwd_store_parent_denied(cmd: str, policy: Policy) -> None:
+    d = decide(_cwd_event(cmd, policy.store.parent), policy)
+    assert d.allow is False
+    assert d.reason
+
+
+def test_bash_cwd_store_denied(policy: Policy) -> None:
+    d = decide(_cwd_event("cat holdout.parquet", policy.store), policy)
+    assert d.allow is False
+
+
+def test_bash_cwd_store_grandparent_denied(policy: Policy) -> None:
+    d = decide(_cwd_event("ls", policy.store.parent.parent), policy)
+    assert d.allow is False
+
+
+@pytest.fixture
+def prefix_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Policy:
+    ws = tmp_path / "ml-referee"
+    ws.mkdir()
+    (ws / ".ml-referee.toml").write_text(TOML)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "ml-referee-xdg"))
+    cfg = load_config(ws / ".ml-referee.toml")
+    store = store_dir(cfg)
+    store.mkdir(parents=True)
+    for name in ("holdout.parquet", "evaluator.py", "manifest.json"):
+        (store / name).write_text("x")
+    return build_policy(cfg, ws)
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "cp -r <share> ./leak",
+        "A=ml; B=referee; cat <share>/$A-$B/proj1/holdout.parquet",
+    ],
+)
+def test_workspace_string_prefix_of_share_denied(
+    cmd: str, prefix_policy: Policy,
+) -> None:
+    d = decide(bash(fill(cmd, prefix_policy), prefix_policy), prefix_policy)
+    assert d.allow is False
+    assert d.reason
+
+
+def test_workspace_with_ml_referee_name_allows_ordinary_commands(
+    prefix_policy: Policy,
+) -> None:
+    ws = prefix_policy.workspace
+    for cmd in (f"cat {ws}/train.csv", f"python {ws}/train.py", f"ls {ws}"):
+        assert decide(bash(cmd, prefix_policy), prefix_policy).allow is True, cmd
+
+
+def test_write_content_config_name_concatenation_allowed(policy: Policy) -> None:
+    ev = _event(
+        "Write",
+        {"file_path": "t.py", "content": "name = '.ml-referee' + '.toml'"},
+        policy,
+    )
+    assert decide(ev, policy).allow is True
+
+
+def test_write_content_with_store_path_still_denied(policy: Policy) -> None:
+    ev = _event(
+        "Write",
+        {"file_path": "t.py", "content": f"p = '{policy.store}'"},
+        policy,
+    )
+    assert decide(ev, policy).allow is False
