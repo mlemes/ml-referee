@@ -63,68 +63,72 @@ class Policy:
         """Scan literal text without shell parsing or filesystem expansion."""
         workspace = self.workspace.resolve()
         store = self.store.resolve()
-        if not (
-            store == workspace
-            or store in workspace.parents
-            or workspace in store.parents
-        ):
-            for marker in sorted(
-                {str(self.workspace), str(workspace)}, key=len, reverse=True,
-            ):
-                text = text.replace(marker, "")
-        text = text.replace(".ml-referee.toml", "")
         normalized = re.sub(r"[^A-Za-z0-9_./~$-]", "", text)
         for value in (text, normalized):
             if any(
                 marker in value
                 for marker in (
-                    str(self.store),
-                    str(self.store.parent.parent),
+                    str(store),
+                    str(store.parent.parent),
                     ".local/share",
                     "~/.local",
                     "/.local",
                     "XDG_DATA_HOME",
                     *(
                         str(parent)
-                        for parent in self.store.parents
+                        for parent in store.parents
                         if parent != Path("/")
-                        and parent != self.workspace
-                        and parent not in self.workspace.parents
+                        and parent != workspace
+                        and parent not in workspace.parents
                     ),
                 )
             ) or re.search(r"\.local.*share", value):
                 return True
-            if "ml-referee" in value:
-                return True
-        return False
+        stripped = text
+        if store != workspace and workspace not in store.parents:
+            spellings = "|".join(
+                re.escape(marker)
+                for marker in sorted(
+                    {str(self.workspace), str(workspace)}, key=len, reverse=True,
+                )
+            )
+            stripped = re.sub(
+                rf"(?<![\w./~-])(?:{spellings})(?![\w.-])|\.ml-referee\.toml",
+                "",
+                text,
+            )
+        return "ml-referee" in stripped or "ml-referee" in re.sub(
+            r"[^A-Za-z0-9_./~$-]", "", stripped,
+        )
 
     def _touches(self, text: str) -> bool:
         if self.substring_touches(text):
             return True
-        try:
-            tokens = shlex.split(text, posix=True)
-        except ValueError:
-            tokens = text.split()
-        for token in tokens:
-            pattern = token.split("=", 1)[-1]
-            if _resolved_touches(
-                pattern, self.store, self.workspace, self.cwd or self.workspace,
-            ):
-                return True
-            if glob.has_magic(pattern):
-                value = _expand(pattern, dict(os.environ))
-                for match in glob.iglob(str((self.cwd or self.workspace) / value)):  # noqa: PTH207
-                    resolved = Path(match).resolve()
-                    if (
-                        resolved == self.store
-                        or self.store in resolved.parents
-                        or (
-                            resolved in self.store.parents
-                            and resolved != self.workspace
-                            and resolved not in self.workspace.parents
-                        )
-                    ):
-                        return True
+        for candidate in (text, re.sub(r"[^A-Za-z0-9_./~$-]", "", text)):
+            try:
+                tokens = shlex.split(candidate, posix=True)
+            except ValueError:
+                tokens = candidate.split()
+            for token in tokens:
+                pattern = token.split("=", 1)[-1]
+                if _resolved_touches(
+                    pattern, self.store, self.workspace, self.cwd or self.workspace,
+                ):
+                    return True
+                if glob.has_magic(pattern):
+                    value = _expand(pattern, dict(os.environ))
+                    for match in glob.iglob(str((self.cwd or self.workspace) / value)):  # noqa: PTH207
+                        resolved = Path(match).resolve()
+                        if (
+                            resolved == self.store
+                            or self.store in resolved.parents
+                            or (
+                                resolved in self.store.parents
+                                and resolved != self.workspace
+                                and resolved not in self.workspace.parents
+                            )
+                        ):
+                            return True
         return False
 
 
@@ -154,7 +158,12 @@ def decide(event: dict[str, object], policy: Policy) -> Decision:  # noqa: C901,
     if not isinstance(cwd, str):
         return denied
     try:
-        active = Policy(policy.store, policy.workspace, _resolve(cwd, policy.workspace))
+        resolved_cwd = _resolve(cwd, policy.workspace)
+        if _resolved_touches(
+            str(resolved_cwd), policy.store, policy.workspace, policy.workspace,
+        ):
+            return denied
+        active = Policy(policy.store, policy.workspace, resolved_cwd)
         required = {
             "Bash": "command",
             "Read": "file_path",
@@ -191,15 +200,13 @@ def decide(event: dict[str, object], policy: Policy) -> Decision:  # noqa: C901,
                         ),
                     )
                 )
-                if ".ml-referee.toml" in value or config_glob:
-                    if not (
-                        simple
-                        and tokens
-                        and tokens[0]
-                        in {"cat", "head", "tail", "less", "ls", "grep", "wc", "stat"}
-                    ):
-                        return denied
-                    value = value.replace(".ml-referee.toml", "")
+                if (".ml-referee.toml" in value or config_glob) and not (
+                    simple
+                    and tokens
+                    and tokens[0]
+                    in {"cat", "head", "tail", "less", "ls", "grep", "wc", "stat"}
+                ):
+                    return denied
                 # Only a single CLI invocation gets the trusted-program exception.
                 if simple and tokens:
                     if tokens[0] == "ml-referee":
