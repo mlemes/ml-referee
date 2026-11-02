@@ -2,12 +2,35 @@
 
 import hashlib
 import json
+import re
 import sys
 from fnmatch import fnmatchcase
 from pathlib import Path
 
 from ml_referee.config import Config, find_config, load_config, store_dir
 from ml_referee.ledger import Ledger, Record
+
+
+def _segments(command: str) -> list[str]:
+    """Normalize command segments and remove leading execution wrappers."""
+    segments = []
+    # shortcut: separators inside quotes also split; use shell parsing if needed.
+    for raw_segment in re.split(r";|&&|\|\||\||&|\n", command):
+        segment = " ".join(raw_segment.split()).strip("'\"")
+        while segment:
+            stripped = re.sub(
+                r"^(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S*)"
+                r"|nice(?:\s+-n\s+[+-]?\d+)?"
+                r"|nohup|env|time|setsid|exec|command|(?:bash|sh)\s+-c)(?:\s+|$)",
+                "",
+                segment,
+                count=1,
+            ).strip("'\"")
+            if stripped == segment:
+                break
+            segment = stripped
+        segments.append(segment)
+    return segments
 
 
 def record(event: dict[str, object], cfg: Config, ledger: Ledger) -> Record | None:
@@ -17,7 +40,10 @@ def record(event: dict[str, object], cfg: Config, ledger: Ledger) -> Record | No
         return None
     command = inputs.get("command")
     if not isinstance(command, str) or not any(
-        fnmatchcase(command, pattern) or fnmatchcase(command, pattern + " *")
+        fnmatchcase(segment, pattern)
+        or segment == pattern
+        or segment.startswith(pattern + " ")
+        for segment in _segments(command)
         for pattern in cfg.trial_patterns
     ):
         return None
@@ -47,9 +73,13 @@ def main() -> int:
         if config is not None:
             cfg = load_config(config)
             record(event, cfg, Ledger(store_dir(cfg) / "ledger.jsonl"))
-    except BaseException:  # noqa: BLE001
+    except BaseException as exc:  # noqa: BLE001
         # Recording must never interrupt the caller, even on malformed input.
-        return 0
+        try:
+            sys.stderr.write(f"ml-referee recorder: {exc}\n")
+        except BaseException:  # noqa: BLE001
+            # A broken diagnostic stream must not interrupt the caller either.
+            return 0
     return 0
 
 
