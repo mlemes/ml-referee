@@ -1,6 +1,9 @@
 import json
 import multiprocessing
+import os
 from pathlib import Path
+
+import pytest
 
 from ml_referee.ledger import Ledger
 
@@ -119,3 +122,59 @@ def test_concurrent_append_keeps_chain(tmp_path: Path) -> None:
     assert [r.index for r in recs] == list(range(30))
     assert ledger.verify().ok is True
     assert ledger.trial_count() == 30
+
+
+def test_head_replaced_atomically_with_private_mode(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.append("trial", {"x": 1})
+    ledger.append("trial", {"x": 2})
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["head.txt", "ledger.jsonl"]
+    assert (tmp_path / "head.txt").stat().st_mode & 0o777 == 0o600
+
+
+def test_failed_head_replace_leaves_previous_head_and_is_recoverable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    r1 = ledger.append("trial", {"x": 1})
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError("simulated crash")
+
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "replace", boom)
+        with pytest.raises(OSError, match="simulated crash"):
+            ledger.append("trial", {"x": 2})
+    assert (tmp_path / "head.txt").read_text().strip() == r1.hash
+    assert len(ledger.records()) == 2
+    result = ledger.verify()
+    assert result.ok is False
+    assert "Head" in result.reason
+    r3 = ledger.append("trial", {"x": 3})
+    assert ledger.verify().ok is True
+    assert len(ledger.records()) == 3
+    assert (tmp_path / "head.txt").read_text().strip() == r3.hash
+
+
+def test_append_repairs_head_pointing_to_previous_record(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.append("trial", {"x": 1})
+    r2 = ledger.append("trial", {"x": 2})
+    r3 = ledger.append("trial", {"x": 3})
+    (tmp_path / "head.txt").write_text(r2.hash + "\n")
+    assert ledger.verify().ok is False
+    r4 = ledger.append("eval", {"x": 4})
+    assert r4.index == 3
+    assert r4.prev_hash == r3.hash
+    assert ledger.verify().ok is True
+    assert (tmp_path / "head.txt").read_text().strip() == r4.hash
+
+
+def test_append_rejects_arbitrary_head_mismatch(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.append("trial", {"x": 1})
+    ledger.append("trial", {"x": 2})
+    (tmp_path / "head.txt").write_text("f" * 64 + "\n")
+    with pytest.raises(ValueError, match="Head"):
+        ledger.append("trial", {"x": 3})
+    assert len(ledger.records()) == 2

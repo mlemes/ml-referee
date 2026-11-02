@@ -228,3 +228,29 @@ def test_empty_frames_do_not_crash() -> None:
     assert isinstance(check_duplicates(empty, empty), list)
     assert isinstance(check_entity_overlap(empty, empty, "g"), list)
     assert isinstance(check_target_leak(empty, "y"), list)
+
+
+def test_numeric_label_scaled_copy_flagged() -> None:
+    rng = np.random.default_rng(2)
+    y = rng.normal(size=60)
+    df = pd.DataFrame({"f": 2 * y + 1, "n": rng.normal(size=60), "y": y})
+    out = check_target_leak(df, "y")
+    assert any(f.severity == "high" and "'f'" in f.detail for f in out)
+    assert not any("'n'" in f.detail for f in out)
+
+
+def test_numeric_label_noisy_monotone_feature_flagged() -> None:
+    rng = np.random.default_rng(3)
+    y = rng.normal(size=200)
+    f = np.exp(y) + rng.normal(scale=0.01, size=200)
+    df = pd.DataFrame({"f": f, "n": rng.normal(size=200), "y": y})
+    out = check_target_leak(df, "y")
+    assert any(f.severity == "high" and "'f'" in f.detail for f in out)
+    assert not any("'n'" in f.detail for f in out)
+
+
+def test_numeric_label_uncorrelated_feature_not_flagged() -> None:
+    rng = np.random.default_rng(4)
+    y = rng.normal(size=200)
+    df = pd.DataFrame({"n": rng.normal(size=200), "y": y})
+    assert check_target_leak(df, "y") == []

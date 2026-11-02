@@ -250,3 +250,25 @@ def test_literal_pattern_does_not_match_suffix(tmp_path: Path) -> None:
     cfg = dataclasses.replace(cfg, trial_patterns=("python train.py",))
     assert record(_event("python train.pyc"), cfg, ledger) is None
     assert ledger.records() == []
+
+
+def test_unsealed_project_records_nothing_and_seal_succeeds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ml_referee.seal import seal
+
+    cfg, _ = _setup(tmp_path)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    (tmp_path / "train.csv").write_text(
+        "a,y\n" + "".join(f"{i},{i % 2}\n" for i in range(20))
+    )
+    store = store_dir(cfg)
+    event = _event("python train.py")
+    event["cwd"] = str(tmp_path)
+    assert _run_main(tmp_path, monkeypatch, json.dumps(event)) == 0
+    assert not store.exists()
+    ev = tmp_path / "ev.py"
+    ev.write_text("print('x')\n")
+    seal(cfg, ev)
+    assert (store / "manifest.json").exists()

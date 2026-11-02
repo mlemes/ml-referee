@@ -250,3 +250,71 @@ def test_claim_reports_duplicate_findings(
     section = report.split("## Audit findings")[1].split("## Limits")[0]
     assert "- high: duplicates:" in section
     assert "No audit findings supplied." not in report
+
+
+def _add_holdout_to_train_flipped(ws: Path) -> None:
+    cfg = load_config(ws / ".ml-referee.toml")
+    hold = pd.read_parquet(store_dir(cfg) / "holdout.parquet")
+    flipped = hold.copy()
+    flipped["y"] = 1 - flipped["y"]
+    train = pd.read_csv(ws / "data" / "train.csv")
+    pd.concat([train, flipped[train.columns]], ignore_index=True).to_csv(
+        ws / "data" / "train.csv", index=False
+    )
+
+
+def test_audit_duplicates_ignore_label(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seal(ws, capsys)
+    _add_holdout_to_train_flipped(ws)
+    code = main(["audit"])
+    lines = [json.loads(x) for x in capsys.readouterr().out.splitlines() if x.strip()]
+    dups = [x for x in lines if x["check"] == "duplicates"]
+    assert dups
+    assert dups[0]["severity"] == "high"
+    assert code == 3
+
+
+def test_claim_duplicates_ignore_label(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seal(ws, capsys)
+    _add_holdout_to_train_flipped(ws)
+    code = main(["claim", "--predictions", str(_preds(ws))])
+    report = capsys.readouterr().out
+    assert code == 0
+    assert "- high: duplicates:" in report
+
+
+def test_claim_bad_out_does_not_consume_budget(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seal(ws, capsys)
+    preds = _preds(ws)
+    missing = ws / "nope" / "report.md"
+    assert main(["claim", "--predictions", str(preds), "--out", str(missing)]) == 1
+    sealed = store_dir(load_config(ws / ".ml-referee.toml")) / "report.md"
+    assert main(["claim", "--predictions", str(preds), "--out", str(sealed)]) == 1
+    assert not sealed.exists()
+    assert _ledger(ws).eval_count() == 0
+    good = ws / "report.md"
+    assert main(["claim", "--predictions", str(preds), "--out", str(good)]) == 0
+    assert good.exists()
+    assert _ledger(ws).eval_count() == 1
+
+
+def test_audit_output_has_no_holdout_label_values(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seal(ws, capsys)
+    _add_holdout_to_train_flipped(ws)
+    main(["audit"])
+    out = capsys.readouterr().out
+    cfg = load_config(ws / ".ml-referee.toml")
+    hold = pd.read_parquet(store_dir(cfg) / "holdout.parquet")
+    for line in out.splitlines():
+        detail = json.loads(line)["detail"]
+        for value in hold["y"].unique():
+            assert f"y={value}" not in detail
+            assert f"label {value}" not in detail

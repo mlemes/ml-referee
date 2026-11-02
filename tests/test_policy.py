@@ -409,3 +409,123 @@ def test_plain_cat_workspace_file_allowed(policy: Policy) -> None:
 def test_dangling_symlink_does_not_crash(policy: Policy) -> None:
     _link(policy, "dangling", policy.workspace / "nonexistent")
     assert isinstance(decide(bash("cat dangling", policy), policy), Decision)
+
+
+@pytest.fixture
+def demo_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Policy:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    ws = tmp_path / "ml-referee-demo"
+    ws.mkdir()
+    (ws / ".ml-referee.toml").write_text(TOML)
+    (ws / "train.py").write_text("print(1)\n")
+    (ws / "train.csv").write_text("a,y\n1,0\n")
+    cfg = load_config(ws / ".ml-referee.toml")
+    store = store_dir(cfg)
+    store.mkdir(parents=True)
+    (store / "holdout.parquet").write_text("x")
+    return build_policy(cfg, ws)
+
+
+def test_demo_workspace_path_contains_name(demo_policy: Policy) -> None:
+    assert "ml-referee" in str(demo_policy.workspace)
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "cat {ws}/train.csv",
+        "python {ws}/train.py",
+        "{ws}/.venv/bin/ml-referee eval predictions.csv",
+        "ls {ws}",
+    ],
+)
+def test_bash_in_ml_referee_named_workspace_allowed(
+    cmd: str, demo_policy: Policy
+) -> None:
+    ev = bash(cmd.format(ws=demo_policy.workspace), demo_policy)
+    assert decide(ev, demo_policy).allow is True
+
+
+@pytest.mark.parametrize("name", ["Read", "Write", "Edit", "Grep", "Glob"])
+def test_file_tools_in_ml_referee_named_workspace_allowed(
+    name: str, demo_policy: Policy
+) -> None:
+    key = {"Grep": "path", "Glob": "pattern"}.get(name, "file_path")
+    value = str(demo_policy.workspace / "train.py")
+    if name == "Grep":
+        value = str(demo_policy.workspace)
+    ev = tool(name, key, value, demo_policy)
+    assert decide(ev, demo_policy).allow is True
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "cat {store}/holdout.parquet",
+        "X=ml-referee; cat ~/.local/share/$X/proj1/holdout.parquet",
+    ],
+)
+def test_ml_referee_named_workspace_still_denies_store(
+    cmd: str, demo_policy: Policy
+) -> None:
+    ev = bash(cmd.format(store=demo_policy.store), demo_policy)
+    assert decide(ev, demo_policy).allow is False
+
+
+@pytest.mark.parametrize(
+    "content", ["# don't overfit\nx = 1", '"""unterminated']
+)
+def test_write_content_with_unmatched_quote_allowed(
+    content: str, policy: Policy
+) -> None:
+    ev = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": str(policy.workspace / "train.py"),
+            "content": content,
+        },
+        "cwd": str(policy.workspace),
+    }
+    assert decide(ev, policy).allow is True
+
+
+def test_edit_new_string_with_apostrophe_allowed(policy: Policy) -> None:
+    ev = {
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": str(policy.workspace / "train.py"),
+            "old_string": "print(1)",
+            "new_string": "print(\"don't\")",
+        },
+        "cwd": str(policy.workspace),
+    }
+    assert decide(ev, policy).allow is True
+
+
+def test_write_content_with_store_path_denied(policy: Policy) -> None:
+    ev = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": str(policy.workspace / "train.py"),
+            "content": f"open('{policy.store}/holdout.parquet')\n",
+        },
+        "cwd": str(policy.workspace),
+    }
+    assert decide(ev, policy).allow is False
+
+
+def test_bash_unmatched_quote_returns_decision(policy: Policy) -> None:
+    assert isinstance(decide(bash("echo don't", policy), policy), Decision)
+
+
+def test_bash_comment_with_apostrophe_allowed(policy: Policy) -> None:
+    ev = bash("# it's fine\npython train.py", policy)
+    assert decide(ev, policy).allow is True
+
+
+@pytest.mark.parametrize("cmd", ['echo "/* c */"', 'echo "/* comment */"', "ls /*"])
+def test_slash_star_token_not_store_ancestor_hit(cmd: str, policy: Policy) -> None:
+    assert decide(bash(cmd, policy), policy).allow is True
