@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from ml_referee.audit.checks import (
     Finding,
@@ -175,3 +176,39 @@ def test_file_without_split_not_flagged(tmp_path: Path) -> None:
 def test_finding_is_frozen_dataclass() -> None:
     f = Finding("c", "info", "d")
     assert (f.check, f.severity, f.detail) == ("c", "info", "d")
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "X_alias = X\nscaler.fit(X_alias)\nX_train, X_test = train_test_split(X)",
+        "Xs: Array = scaler.fit_transform(X)\nX_train, X_test = train_test_split(Xs)",
+        "pipe.fit(df[cols], y)\nX_train, X_test = train_test_split(df)",
+        "scaler.fit(X.values)\ntrain_test_split(X)",
+        "scaler.fit(X=X)\ntrain_test_split(X)",
+    ],
+)
+def test_fit_on_full_variants_flagged_high(tmp_path: Path, src: str) -> None:
+    out = check_fit_on_full([_write(tmp_path, "a.py", src)])
+    assert len(out) == 1
+    assert out[0].severity == "high"
+
+
+def test_unrelated_earlier_fit_sharing_selector_not_flagged(tmp_path: Path) -> None:
+    src = (
+        "scaler.fit(other_df, cols)\nX = df[cols]\n"
+        "X_train, X_test = train_test_split(X)"
+    )
+    assert check_fit_on_full([_write(tmp_path, "a.py", src)]) == []
+
+
+def test_fit_after_split_on_training_part_not_flagged(tmp_path: Path) -> None:
+    src = "X_train, X_test = train_test_split(X)\nscaler.fit(X_train.values)"
+    assert check_fit_on_full([_write(tmp_path, "a.py", src)]) == []
+
+
+def test_empty_frames_do_not_crash() -> None:
+    empty = pd.DataFrame({"g": pd.Series([], dtype=object), "f": [], "y": []})
+    assert isinstance(check_duplicates(empty, empty), list)
+    assert isinstance(check_entity_overlap(empty, empty, "g"), list)
+    assert isinstance(check_target_leak(empty, "y"), list)
