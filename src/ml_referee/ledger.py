@@ -3,6 +3,8 @@
 import fcntl
 import hashlib
 import json
+import os
+import tempfile
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,6 +48,15 @@ class Ledger:
             stream.seek(0)
             records = [Record(**json.loads(line)) for line in stream]
             result = self._verify(records)
+            if (
+                not result.ok
+                and result.reason == "Head hash mismatch"
+                and len(records) >= 2  # noqa: PLR2004
+                and self.path.with_name("head.txt").read_text(encoding="utf-8").strip()
+                == records[-2].hash
+            ):
+                self._write_head(records[-1].hash)
+                result = self._verify(records)
             if not result.ok:
                 raise ValueError(result.reason)
             data = {
@@ -59,8 +70,18 @@ class Ledger:
             serialized = json.dumps({**data, "hash": digest}, sort_keys=True)
             stream.write(serialized + "\n")
             stream.flush()
-            self.path.with_name("head.txt").write_text(digest + "\n", encoding="utf-8")
+            self._write_head(digest)
             return Record(**json.loads(serialized))
+
+    def _write_head(self, digest: str) -> None:
+        """Atomically replace the head with a private file under the ledger lock."""
+        descriptor, temporary = tempfile.mkstemp(dir=self.path.parent)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(digest + "\n")
+            os.replace(temporary, self.path.with_name("head.txt"))  # noqa: PTH105
+        finally:
+            Path(temporary).unlink(missing_ok=True)
 
     def records(self) -> list[Record]:
         """Return all records."""

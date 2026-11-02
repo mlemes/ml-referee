@@ -59,7 +59,7 @@ def check_entity_overlap(
     return findings
 
 
-def check_target_leak(
+def check_target_leak(  # noqa: C901
     train: pd.DataFrame,
     label: str,
     auc_threshold: float = 0.98,
@@ -85,6 +85,17 @@ def check_target_leak(
                 findings.append(
                     Finding("target_leak", "high", f"{column!r} equals label."),
                 )
+            elif pd.api.types.is_numeric_dtype(target):
+                x_ranks, y_ranks = rankdata(x), rankdata(y)
+                if np.ptp(x_ranks) > 0 and np.ptp(y_ranks) > 0:
+                    spearman = float(np.corrcoef(x_ranks, y_ranks)[0, 1])
+                    if abs(spearman) >= auc_threshold:
+                        findings.append(
+                            Finding(
+                                "target_leak", "high",
+                                f"{column!r} Spearman={spearman:.6f}.",
+                            ),
+                        )
             continue
         positive = y == classes[1]
         n_positive = int(positive.sum())

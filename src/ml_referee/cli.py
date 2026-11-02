@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -42,6 +43,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _audit(cfg: Config, sources: list[Path]) -> list[Finding]:
+    """Run audits; counts reveal holdout membership (accepted residual)."""
     _verify_store(cfg, store_dir(cfg))
     train = (
         pd.read_csv(cfg.train_path)
@@ -50,14 +52,14 @@ def _audit(cfg: Config, sources: list[Path]) -> list[Finding]:
     )
     holdout = pd.read_parquet(store_dir(cfg) / "holdout.parquet")
     return [
-        *check_duplicates(train, holdout),
+        *check_duplicates(train, holdout.drop(columns=[cfg.label], errors="ignore")),
         *check_entity_overlap(train, holdout, cfg.group),
         *check_target_leak(train, cfg.label),
         *check_fit_on_full(sources),
     ]
 
 
-def _run(args: argparse.Namespace, cfg: Config) -> int:
+def _run(args: argparse.Namespace, cfg: Config) -> int:  # noqa: C901, PLR0912
     if args.command == "seal":
         manifest = seal(cfg, args.evaluator)
         sys.stdout.write(f"Sealed holdout rows: {manifest.n_holdout}\n")
@@ -74,6 +76,15 @@ def _run(args: argparse.Namespace, cfg: Config) -> int:
         sys.stdout.write(json.dumps(asdict(verification)) + "\n")
         return 0 if verification.ok else 1
     elif args.command == "claim":
+        if args.out is not None:
+            output = args.out.resolve()
+            directory = store_dir(cfg).resolve()
+            if output == directory or directory in output.parents:
+                msg = "Claim output must be outside the sealed store"
+                raise ValueError(msg)
+            if not output.parent.is_dir() or not os.access(output.parent, os.W_OK):
+                msg = "Claim output parent must exist and be writable"
+                raise ValueError(msg)
         scores = []
         if args.val_scores is not None:
             scores = json.loads(args.val_scores.read_text(encoding="utf-8"))

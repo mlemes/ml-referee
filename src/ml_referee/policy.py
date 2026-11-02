@@ -58,7 +58,8 @@ class Policy:
         except (OSError, RuntimeError, ValueError):
             return True
 
-    def _touches(self, text: str) -> bool:
+    def substring_touches(self, text: str) -> bool:
+        """Scan literal text without shell parsing or filesystem expansion."""
         normalized = re.sub(r"[^A-Za-z0-9_./~$-]", "", text)
         for value in (text, normalized):
             if any(
@@ -66,7 +67,6 @@ class Policy:
                 for marker in (
                     str(self.store),
                     str(self.store.parent.parent),
-                    "ml-referee",
                     ".local/share",
                     "~/.local",
                     "/.local",
@@ -81,7 +81,28 @@ class Policy:
                 )
             ) or re.search(r"\.local.*share", value):
                 return True
-        for token in shlex.split(text, posix=True):
+            stripped = value
+            for marker in sorted(
+                {
+                    str(self.workspace), str(self.workspace.resolve()),
+                    ".ml-referee.toml",
+                },
+                key=len,
+                reverse=True,
+            ):
+                stripped = stripped.replace(marker, "")
+            if "ml-referee" in stripped:
+                return True
+        return False
+
+    def _touches(self, text: str) -> bool:
+        if self.substring_touches(text):
+            return True
+        try:
+            tokens = shlex.split(text, posix=True)
+        except ValueError:
+            tokens = text.split()
+        for token in tokens:
             pattern = token.split("=", 1)[-1]
             if _resolved_touches(pattern, self.store, self.workspace, self.workspace):
                 return True
@@ -92,7 +113,11 @@ class Policy:
                     if (
                         resolved == self.store
                         or self.store in resolved.parents
-                        or resolved in self.store.parents
+                        or (
+                            resolved in self.store.parents
+                            and resolved != self.workspace
+                            and resolved not in self.workspace.parents
+                        )
                     ):
                         return True
         return False
@@ -144,7 +169,10 @@ def decide(event: dict[str, object], policy: Policy) -> Decision:  # noqa: C901,
             if not isinstance(value, str):
                 return denied
             if name == "Bash" and key == "command":
-                tokens = shlex.split(value, posix=True)
+                try:
+                    tokens = shlex.split(value, posix=True)
+                except ValueError:
+                    tokens = value.split()
                 simple = not any(char in value for char in ";&|<>()`\n$")
                 config_glob = any(
                     Path(match).resolve()
@@ -173,6 +201,10 @@ def decide(event: dict[str, object], policy: Policy) -> Decision:  # noqa: C901,
                         value = " ".join(tokens[1:])
                     elif tokens[:3] == ["python", "-m", "ml_referee"]:
                         value = " ".join(tokens[3:])
+            if name in {"Write", "Edit"} and key in {"content", "new_string"}:
+                if active.substring_touches(value):
+                    return denied
+                continue
             if active.touches_sealed(value):
                 return denied
             if (
