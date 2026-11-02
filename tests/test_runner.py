@@ -1,6 +1,8 @@
 import multiprocessing as mp
 import os
 import re
+import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -156,31 +158,169 @@ def test_tampered_ledger_raises_integrity_error(
 def test_evaluator_nonzero_exit_does_not_consume_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cfg, preds = _setup(
-        tmp_path, monkeypatch, evaluator="import sys\nsys.exit(3)\n"
+    marker = tmp_path / "go.marker"
+    evaluator = (
+        "import os, sys\n"
+        f"if not os.path.exists({str(marker)!r}):\n"
+        "    sys.exit(3)\n" + GOOD
     )
+    cfg, preds = _setup(tmp_path, monkeypatch, evaluator=evaluator)
     with pytest.raises(EvaluatorError):
         run_holdout_eval(cfg, preds)
     assert _eval_records(cfg) == 0
-    # Re-seal-free recovery: restore a good evaluator and its manifest hash.
-    _swap_evaluator(cfg, GOOD)
+    marker.write_text("ok")
     assert run_holdout_eval(cfg, preds).value == pytest.approx(1.0)
     assert _eval_records(cfg) == 1
 
 
-def _swap_evaluator(cfg: Config, source: str) -> None:
-    import hashlib
-    import json
+def test_missing_ledger_raises_integrity_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, preds = _setup(tmp_path, monkeypatch)
+    (store_dir(cfg) / "ledger.jsonl").unlink()
+    with pytest.raises(IntegrityError):
+        run_holdout_eval(cfg, preds)
 
+
+def test_missing_head_raises_integrity_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, preds = _setup(tmp_path, monkeypatch)
+    (store_dir(cfg) / "head.txt").unlink()
+    with pytest.raises(IntegrityError):
+        run_holdout_eval(cfg, preds)
+
+
+def test_empty_ledger_with_head_raises_integrity_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, preds = _setup(tmp_path, monkeypatch)
+    ledger = store_dir(cfg) / "ledger.jsonl"
+    _writable(ledger)
+    ledger.write_text("")
+    with pytest.raises(IntegrityError):
+        run_holdout_eval(cfg, preds)
+
+
+def test_missing_store_dir_raises_integrity_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, preds = _setup(tmp_path, monkeypatch)
+    shutil.rmtree(store_dir(cfg))
+    with pytest.raises(IntegrityError):
+        run_holdout_eval(cfg, preds)
+
+
+def test_first_record_not_seal_raises_integrity_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, preds = _setup(tmp_path, monkeypatch)
     directory = store_dir(cfg)
-    ev = directory / "evaluator.py"
-    manifest = directory / "manifest.json"
-    for path in (ev, manifest):
-        _writable(path)
-    ev.write_text(source)
-    data = json.loads(manifest.read_text())
-    data["evaluator_sha256"] = hashlib.sha256(source.encode()).hexdigest()
-    manifest.write_text(json.dumps(data, sort_keys=True) + "\n")
+    for name in ("ledger.jsonl", "head.txt"):
+        (directory / name).unlink()
+    Ledger(directory / "ledger.jsonl").append("trial", {"a": 1})
+    with pytest.raises(IntegrityError):
+        run_holdout_eval(cfg, preds)
+    assert _eval_records(cfg) == 0
+
+
+def test_predictions_symlink_to_holdout_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, preds = _setup(tmp_path, monkeypatch)
+    link = tmp_path / "link.csv"
+    link.symlink_to(store_dir(cfg) / "holdout.parquet")
+    with pytest.raises((EvaluatorError, IntegrityError)):
+        run_holdout_eval(cfg, link)
+    assert _eval_records(cfg) == 0
+
+
+def test_predictions_missing_raises_evaluator_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, _ = _setup(tmp_path, monkeypatch)
+    with pytest.raises(EvaluatorError):
+        run_holdout_eval(cfg, tmp_path / "nope.csv")
+    assert _eval_records(cfg) == 0
+
+
+def test_timeout_kills_grandchild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pidfile = tmp_path / "grandchild.pid"
+    evaluator = (
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time; time.sleep(30)'])\n"
+        f"open({str(pidfile)!r}, 'w').write(str(child.pid))\n"
+        "time.sleep(30)\n"
+    )
+    cfg, preds = _setup(tmp_path, monkeypatch, evaluator=evaluator)
+    monkeypatch.setattr(runner, "EVAL_TIMEOUT_S", 1)
+    start = time.monotonic()
+    with pytest.raises(EvaluatorError):
+        run_holdout_eval(cfg, preds)
+    assert time.monotonic() - start < 6
+    pid = int(pidfile.read_text())
+    dead = False
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            dead = True
+            break
+        time.sleep(0.1)
+    assert dead
+    assert _eval_records(cfg) == 0
+
+
+_LEAK = (
+    "import sys\n"
+    "sys.stdout.write('SECRET-0.9137\\n'); sys.stderr.write('SECRET-0.9137\\n')\n"
+)
+
+
+@pytest.mark.parametrize(
+    "kind", ["nonzero", "bad_json", "timeout", "n_mismatch"]
+)
+def test_failure_paths_do_not_leak_evaluator_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+    kind: str,
+) -> None:
+    tail = {
+        "nonzero": "sys.exit(3)\n",
+        "bad_json": "",
+        "timeout": "import time\ntime.sleep(30)\n",
+        "n_mismatch": 'print(\'{"value": 0.5, "n": 7}\')\n',
+    }[kind]
+    cfg, preds = _setup(tmp_path, monkeypatch, evaluator=_LEAK + tail)
+    if kind == "timeout":
+        monkeypatch.setattr(runner, "EVAL_TIMEOUT_S", 1)
+    capfd.readouterr()
+    with pytest.raises((EvaluatorError, IntegrityError)) as info:
+        run_holdout_eval(cfg, preds)
+    exc = info.value
+    out = capfd.readouterr()
+    for text in (
+        str(exc),
+        repr(exc.__cause__),
+        repr(exc.__context__),
+        out.out,
+        out.err,
+    ):
+        assert "SECRET-0.9137" not in text
+        assert "0.9137" not in text
+
+
+def test_eval_lock_mode_is_0600(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, preds = _setup(tmp_path, monkeypatch)
+    run_holdout_eval(cfg, preds)
+    mode = (store_dir(cfg) / "eval.lock").stat().st_mode & 0o777
+    assert mode == 0o600
 
 
 @pytest.mark.parametrize(
