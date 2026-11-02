@@ -1,6 +1,8 @@
 # Evaluation protocol
 
-This file defines how to evaluate `ml-referee`. Run it after the implementation plan finishes. Fill in the results table in the paper only from runs that follow this protocol.
+This file defines how to evaluate `ml-referee`. Fill in the results table in the paper only from runs that follow this protocol.
+
+**Status:** the scripted-attack bench for RQ1 exists at `bench/`. Agent runs for RQ2 to RQ4 are pending.
 
 ## Research questions
 
@@ -20,14 +22,22 @@ This file defines how to evaluate `ml-referee`. Run it after the implementation 
 
 ## Tasks
 
-- The three tabular tasks from BAITBENCH (Prasad et al., arXiv:2608.30724). Confirm the release and license before use.
+- The three tabular tasks from BAITBENCH (Prasad et al., arXiv:2608.30724). The BAITBENCH release is unconfirmed. Confirm the release and license before use.
 - One open-ended research-pipeline task written for this project, with a planted evaluator weakness. Define it in `bench/tasks/`.
 
 ## Scripted attacks (RQ1)
 
 Run each attack class A1 to A8 from `docs/research/threat-model/threat-model.md` as a scripted tool-call sequence. Include three shell obfuscations for A2: glob, symlink, and variable expansion. Report the blocked fraction per class and per condition.
 
-## Agent runs (RQ2, RQ3)
+The bench covers C0, C2, and C3. C1 is an agent condition. Run it with:
+
+```bash
+.venv/bin/python -m bench.run_attacks
+```
+
+The bench prints a Markdown table of block rates. It uses synthetic tool-call events and does not measure agent behavior.
+
+## Agent runs (RQ2 to RQ4, pending)
 
 - Use at least two agent models. Pick them with the live quota check before the run.
 - Run each task and condition at least 10 times. Compute the final run count from a power analysis on the pilot (Task 11 of the plan).

@@ -131,7 +131,7 @@ def test_concurrent_append_keeps_chain(tmp_path): ...       # two processes, cha
 - Consumes: `Config`, `store_dir`, `Ledger`.
 - Produces:
   - `@dataclass(frozen=True) class Manifest: holdout_sha256: str; evaluator_sha256: str; seed: int; metric: str; higher_is_better: bool; n_holdout: int`
-  - `seal(cfg: Config, evaluator_src: Path) -> Manifest`
+  - `seal(cfg: Config, evaluator_src: Path) -> Manifest`. It moves the source data into the store and rewrites the workspace train file with the non-holdout rows. It creates no validation split.
   - `verify_manifest(cfg: Config) -> bool`
   - `load_manifest(cfg: Config) -> Manifest`
 
@@ -291,9 +291,9 @@ def test_scaler_fit_after_split_not_flagged(tmp_path): ...
 - Produces:
   - `bonferroni(p: float, n: int) -> float`
   - `bh_adjust(ps: list[float]) -> list[float]`
-  - `selection_gap(validation_scores: list[float], holdout: float) -> float` (max validation minus holdout)
-  - `build_report(manifest: Manifest, result: EvalResult, trials: int, findings: list[Finding], validation_scores: list[float]) -> str`
-  - `claim(cfg: Config, predictions: Path) -> str` (verifies ledger and manifest, runs one sealed eval, returns the report)
+  - `selection_gap(validation_scores: list[float], holdout: float, higher_is_better: bool = True) -> float` (max validation minus holdout, or holdout minus min validation when lower is better)
+  - `build_report(manifest: Manifest, result: EvalResult, trials: int, findings: list[Finding], validation_scores: list[float], p_value: float | None = None, higher_is_better: bool | None = None) -> str`
+  - `claim(cfg: Config, predictions: Path, validation_scores: list[float] | None = None, p_value: float | None = None, findings: list[Finding] | None = None, higher_is_better: bool | None = None) -> str` (verifies ledger and manifest, runs one sealed eval, returns the report)
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -348,7 +348,7 @@ def test_end_to_end_seal_eval_claim(tmp_path): ...   # synthetic data; claim rep
 
 **Interfaces:**
 - Consumes: `decide`, `Policy`, `Ledger`, `run_holdout_eval`.
-- Produces: `run_all(policy: Policy, conditions: tuple[str, ...]) -> dict[str, dict[str, float]]` (block rate per attack and condition). Conditions: `"C0"`, `"C2"`, `"C3"` from `docs/research/evaluation/protocol.md`. C1 is an agent condition and is excluded here.
+- Produces: `run_all(env: AttackEnv, conditions: tuple[str, ...] = ("C0", "C2", "C3")) -> dict[str, dict[str, float]]`. It returns the block rate per attack and condition. Build `env` with `bench.env.make_env(tmp_path)`. A bare `Policy` raises `TypeError`. Conditions: `"C0"`, `"C2"`, `"C3"` from `docs/research/evaluation/protocol.md`. C1 is an agent condition and is excluded here.
 
 - [ ] **Step 1: Write the failing tests**
 

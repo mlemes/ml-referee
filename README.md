@@ -2,7 +2,38 @@
 
 A Claude Code plugin that separates the agent that produces a machine learning result from the evidence that certifies it.
 
-**Status:** design and plan only. No code yet.
+**Status:** implemented, v0.1. The scripted-attack bench exists. Agent runs for the paper are pending, and the paper has no results yet.
+
+## Install the plugin locally
+
+1. Clone this repository and create the environment:
+
+   ```bash
+   python3 -m venv .venv
+   .venv/bin/pip install -e ".[dev]"
+   ```
+
+2. Start Claude Code with the plugin from the repository root:
+
+   ```bash
+   claude --plugin-dir .
+   ```
+
+3. In your project, create `.ml-referee.toml`, then run `/ml-seal`.
+
+The hooks run `python3`. If `python3` is missing, a hook crash does not block the tool call in Claude Code, so the guard fails open.
+
+## Run the gate
+
+```bash
+.venv/bin/ruff check . && .venv/bin/mypy src && .venv/bin/python -m pytest -q
+```
+
+## Run the scripted attacks
+
+```bash
+.venv/bin/python -m bench.run_attacks
+```
 
 ## Read first
 
@@ -15,16 +46,16 @@ A Claude Code plugin that separates the agent that produces a machine learning r
 ## Repository layout
 
 ```text
+src/ml_referee/   package: config, ledger, seal, policy, runner, cli, hooks, audit, claim
+hooks/            hooks.json registration
+commands/         /ml-seal, /ml-audit, /ml-claim
+skills/           ml-referee skill
+agents/           ml-reviewer agent
+bench/            scripted attacks
+tests/            test suite
 docs/
   architecture.md
   data_flow.md
-  research/
-    paper/          paper draft
-    references/     verified BibTeX
-    related-work/   tool landscape
-    threat-model/   adversary and attack classes
-    evaluation/     evaluation protocol
-  superpowers/
-    specs/          design documents
-    plans/          implementation plans
+  research/       paper, references, related work, threat model, evaluation
+  superpowers/    specs and plans
 ```
