@@ -151,4 +151,77 @@ def test_claim_refuses_when_ledger_invalid(
     with pytest.raises(IntegrityError):
         claim(cfg, preds, [0.9])
     ledger.chmod(0o600)
-    assert "eval" not in ledger.read_text()
+    assert Ledger(ledger).eval_count() == 0
+
+
+def _gap_line(text: str) -> str:
+    return next(
+        line for line in text.splitlines() if line.startswith("Selection gap:")
+    )
+
+
+def _gap_report(manifest_higher: bool, explicit: bool | None) -> str:
+    result = EvalResult(metric="acc", value=0.7, n=25)
+    text = build_report(
+        _manifest(manifest_higher), result, 1, [], [0.8, 0.9],
+        higher_is_better=explicit,
+    )
+    return _gap_line(text)
+
+
+@pytest.mark.parametrize(
+    ("manifest_higher", "expected"), [(True, "0.2"), (False, "-0.1")]
+)
+def test_report_none_uses_manifest_direction(
+    manifest_higher: bool, expected: str
+) -> None:
+    assert _gap_report(manifest_higher, None) == f"Selection gap: {expected}"
+
+
+def test_report_explicit_true_overrides_manifest_false() -> None:
+    assert _gap_report(False, True) == "Selection gap: 0.2"
+
+
+def test_report_explicit_false_overrides_manifest_true() -> None:
+    assert _gap_report(True, False) == "Selection gap: -0.1"
+
+
+@pytest.mark.parametrize(("p", "n"), [(True, 2), (0.5, True)])
+def test_bonferroni_rejects_bool(p: float, n: int) -> None:
+    with pytest.raises(ValueError):
+        bonferroni(p, n)
+
+
+def test_bonferroni_rejects_nan() -> None:
+    with pytest.raises(ValueError):
+        bonferroni(float("nan"), 2)
+
+
+def test_bh_rejects_nan() -> None:
+    with pytest.raises(ValueError):
+        bh_adjust([float("nan")])
+
+
+def test_selection_gap_rejects_inf() -> None:
+    with pytest.raises(ValueError):
+        selection_gap([float("inf")], 0.5)
+
+
+def test_claim_nan_scores_rejected_before_eval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, preds = _setup(tmp_path, monkeypatch)
+    with pytest.raises(ValueError):
+        claim(cfg, preds, validation_scores=[float("nan")])
+    assert Ledger(store_dir(cfg) / "ledger.jsonl").eval_count() == 0
+    text = claim(cfg, preds, [0.9])
+    assert "acc" in text
+    assert Ledger(store_dir(cfg) / "ledger.jsonl").eval_count() == 1
+
+
+def test_claim_validation_scores_optional(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, preds = _setup(tmp_path, monkeypatch)
+    text = claim(cfg, preds)
+    assert "Selection gap unavailable" in text
