@@ -1,3 +1,4 @@
+import dataclasses
 import hashlib
 import io
 import json
@@ -230,3 +231,22 @@ def test_main_without_config_stderr_empty(
     event["cwd"] = str(work)
     assert _run_main(tmp_path, monkeypatch, json.dumps(event)) == 0
     assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(
+    "command", ["python3 train.py --lr 1", "python train.py"]
+)
+def test_glob_pattern_matches_command(tmp_path: Path, command: str) -> None:
+    cfg, ledger = _setup(tmp_path)
+    cfg = dataclasses.replace(cfg, trial_patterns=("python* train.py",))
+    rec = record(_event(command), cfg, ledger)
+    assert rec is not None
+    assert rec.payload["command"] == command
+    assert len(ledger.records()) == 1
+
+
+def test_literal_pattern_does_not_match_suffix(tmp_path: Path) -> None:
+    cfg, ledger = _setup(tmp_path)
+    cfg = dataclasses.replace(cfg, trial_patterns=("python train.py",))
+    assert record(_event("python train.pyc"), cfg, ledger) is None
+    assert ledger.records() == []
