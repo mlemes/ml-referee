@@ -38,7 +38,7 @@ def build_report(  # noqa: PLR0913, PLR0917
     audit = "\n".join(
         f"- {finding.severity}: {finding.check}: {finding.detail}"
         for finding in findings
-    ) or "No audit findings supplied."
+    ) or "No audit findings."
     return (
         "# Claim\n\nSealed holdout evaluation.\n\n"
         f"## Sealed score\n\n{result.metric}: {result.value} (n={result.n})\n\n"

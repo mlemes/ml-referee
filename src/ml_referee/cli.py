@@ -82,7 +82,9 @@ def _run(args: argparse.Namespace, cfg: Config) -> int:
             ):
                 msg = "Validation scores must be a JSON list of numbers"
                 raise ValueError(msg)
-        report = claim(cfg, args.predictions, scores, args.p_value)
+        report = claim(
+            cfg, args.predictions, scores, args.p_value, findings=_audit(cfg, []),
+        )
         if args.out is not None:
             args.out.write_text(report, encoding="utf-8")
         else:
