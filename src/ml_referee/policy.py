@@ -26,6 +26,24 @@ def _resolve(value: str, cwd: Path) -> Path:
     return (cwd / path).resolve()
 
 
+def _resolved_touches(value: str, store: Path, workspace: Path, cwd: Path) -> bool:
+    if not value or glob.has_magic(value):
+        return False
+    try:
+        path = _resolve(str(Path(value).expanduser()), cwd)
+    except (OSError, RuntimeError, ValueError):
+        return "/" in value or "." in value
+    return (
+        path == store
+        or store in path.parents
+        or (
+            path in store.parents
+            and path != workspace
+            and path not in workspace.parents
+        )
+    )
+
+
 @dataclass(frozen=True)
 class Policy:
     """Sealed store and workspace locations."""
@@ -65,6 +83,8 @@ class Policy:
                 return True
         for token in shlex.split(text, posix=True):
             pattern = token.split("=", 1)[-1]
+            if _resolved_touches(pattern, self.store, self.workspace, self.workspace):
+                return True
             if glob.has_magic(pattern):
                 value = _expand(pattern, dict(os.environ))
                 for match in glob.iglob(str(self.workspace / value)):  # noqa: PTH207
@@ -155,16 +175,17 @@ def decide(event: dict[str, object], policy: Policy) -> Decision:  # noqa: C901,
                         value = " ".join(tokens[3:])
             if active.touches_sealed(value):
                 return denied
-            if name in {"Grep", "Glob", "Read"} and key in {
-                "path",
-                "pattern",
-                "file_path",
-            }:
-                path = _resolve(_expand(value, dict(os.environ)), active.workspace)
-                if path in policy.store.parents and not (
-                    path == policy.workspace or path in policy.workspace.parents
-                ):
-                    return denied
+            if (
+                name in {"Grep", "Glob", "Read", "Write", "Edit"}
+                and key in {"path", "pattern", "file_path"}
+                and _resolved_touches(
+                    _expand(value, dict(os.environ)),
+                    policy.store,
+                    policy.workspace,
+                    active.workspace,
+                )
+            ):
+                return denied
             if name in {"Write", "Edit"} and key == "file_path":
                 path = _resolve(_expand(value, dict(os.environ)), active.workspace)
                 if path == (policy.workspace / ".ml-referee.toml").resolve():
