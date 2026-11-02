@@ -95,6 +95,19 @@ def load_config(path: Path) -> Config:
     )
 
 
+def find_config(start: Path) -> Path | None:
+    """Find the nearest config, starting at a workspace directory."""
+    workspace = start.resolve()
+    for directory in (workspace, *workspace.parents):
+        config = directory / ".ml-referee.toml"
+        try:
+            config.lstat()
+        except FileNotFoundError:
+            continue
+        return config
+    return None
+
+
 def store_dir(cfg: Config) -> Path:
     """Return the per-project data directory under XDG_DATA_HOME."""
     base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")

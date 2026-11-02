@@ -1,14 +1,57 @@
 """PostToolUse hook that records trial commands in the ledger."""
 
-from ml_referee.config import Config
+import hashlib
+import json
+import sys
+from fnmatch import fnmatchcase
+from pathlib import Path
+
+from ml_referee.config import Config, find_config, load_config, store_dir
 from ml_referee.ledger import Ledger, Record
 
 
 def record(event: dict[str, object], cfg: Config, ledger: Ledger) -> Record | None:
     """Append a trial record when the event is a matching Bash command."""
-    raise NotImplementedError
+    inputs = event.get("tool_input")
+    if event.get("tool_name") != "Bash" or not isinstance(inputs, dict):
+        return None
+    command = inputs.get("command")
+    if not isinstance(command, str) or not any(
+        fnmatchcase(command, pattern) or fnmatchcase(command, pattern + " *")
+        for pattern in cfg.trial_patterns
+    ):
+        return None
+    response = event.get("tool_response")
+    exit_code = response.get("exit_code") if isinstance(response, dict) else None
+    try:
+        with cfg.train_path.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    except OSError:
+        digest = None
+    return ledger.append("trial", {
+        "command": command,
+        "exit_code": exit_code,
+        "failed": event.get("hook_event_name") == "PostToolUseFailure"
+        or (exit_code is not None and exit_code != 0),
+        "train_sha256": digest,
+    })
 
 
 def main() -> int:
     """Read one hook event from stdin and record it. Never raises."""
-    raise NotImplementedError
+    try:
+        event = json.load(sys.stdin)
+        if not isinstance(event, dict) or not isinstance(event.get("cwd"), str):
+            return 0
+        config = find_config(Path(event["cwd"]))
+        if config is not None:
+            cfg = load_config(config)
+            record(event, cfg, Ledger(store_dir(cfg) / "ledger.jsonl"))
+    except BaseException:  # noqa: BLE001
+        # Recording must never interrupt the caller, even on malformed input.
+        return 0
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
