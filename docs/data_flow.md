@@ -18,13 +18,18 @@ This document traces data through `ml-referee` v0.1 as implemented. Update it in
 1. Claude Code sends a tool call to `hooks.guard` as JSON on standard input (untrusted: the agent chose it).
 2. `hooks.guard.main` walks up from `cwd` to `.ml-referee.toml`, loads it, and builds a `Policy`. A malformed event or an invalid config produces a deny. No config means allow.
 3. `policy.decide` checks the string inputs. It denies `Write` and `Edit` of `.ml-referee.toml` and `Bash` commands that modify it.
-4. `Policy.touches_sealed` matches normalized substrings, resolves tokens with symlink-aware paths, and expands globs.
-5. A deny returns a `permissionDecision` of `deny` with a reason to the agent.
+4. `Policy.substring_touches` runs the marker checks (store path, parents, `.local/share`, `XDG_DATA_HOME`, ancestors) on the unstripped text. It removes the workspace path and `.ml-referee.toml` only before the bare `ml-referee` check, and skips that removal when the store is inside the workspace. `Write` content and `Edit` `new_string` get only these substring rules.
+5. `Policy.touches_sealed` resolves shell tokens with symlink-aware paths and expands globs. A shell parse error falls back to whitespace splitting. `decide` also denies a `cwd` inside the store or at a store ancestor.
+6. A deny returns a `permissionDecision` of `deny` with a reason to the agent.
+
+## Ledger write
+
+`Ledger.append` writes `head.txt` atomically (a `0600` temporary file, then `os.replace`). It repairs a head that a crash left one record behind. Any other mismatch is an integrity failure.
 
 ## Record
 
 1. Claude Code sends the finished Bash call to `hooks.recorder` (`PostToolUse` or `PostToolUseFailure`).
-2. `recorder._segments` splits the command into segments and strips environment assignments and wrappers.
+2. The recorder proceeds only if `manifest.json` exists in the store. It never creates the store. `recorder._segments` splits the command into segments and strips environment assignments and wrappers.
 3. `recorder.record` matches `trial_patterns` per segment. A command outside the patterns is not recorded.
 4. On a match, `ledger.Ledger.append` writes a `trial` record: command, exit code, failure flag, and the SHA-256 of the train file.
 5. The recorder never raises. It logs errors to standard error and exits 0.
@@ -42,14 +47,16 @@ This document traces data through `ml-referee` v0.1 as implemented. Update it in
 ## Audit
 
 1. `cli.audit` verifies the store, then loads the workspace train file and the sealed holdout.
-2. `audit.checks` produce findings: duplicates, entity overlap, target leakage, and fit before split in the files you pass with `--sources`.
+2. `audit.checks` produce findings: duplicates (the label column is ignored), entity overlap, target leakage (Spearman rank correlation for non-binary labels), and fit before split in the files you pass with `--sources`.
 3. `cli.audit` prints one JSON line per finding. It exits 3 when any finding is high severity.
 4. The `ml-reviewer` agent reads the diff and the findings and reports without editing files.
+
+Audit and claim counts reveal holdout membership to an agent that can run the CLI. This is an accepted residual.
 
 ## Claim
 
 1. You run `/ml-claim`, which calls `ml-referee claim --predictions <path>`. Optional inputs are `--val-scores` (a JSON list), `--p-value`, and `--out`.
-2. `cli.claim` runs the audit with no source files to collect findings.
+2. `cli.claim` validates `--out` (not a directory, writable, outside the store) before it spends the budget, then runs the audit with no source files to collect findings.
 3. `claim.report.claim` verifies the store, then reads the trial count `N` from the ledger.
 4. `claim.report.claim` calls `runner.run_holdout_eval`. This consumes one holdout evaluation, even if you ran `eval` before.
 5. `claim.report.build_report` applies `bonferroni(p_value, N)` when you supply a p-value and `selection_gap` when you supply validation scores.
