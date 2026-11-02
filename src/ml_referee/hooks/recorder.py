@@ -41,6 +41,7 @@ def record(event: dict[str, object], cfg: Config, ledger: Ledger) -> Record | No
     command = inputs.get("command")
     if not isinstance(command, str) or not any(
         fnmatchcase(segment, pattern)
+        or fnmatchcase(segment, pattern + " *")
         or segment == pattern
         or segment.startswith(pattern + " ")
         for segment in _segments(command)
