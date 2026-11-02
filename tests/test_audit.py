@@ -194,6 +194,22 @@ def test_fit_on_full_variants_flagged_high(tmp_path: Path, src: str) -> None:
     assert out[0].severity == "high"
 
 
+@pytest.mark.parametrize(
+    "src",
+    [
+        'scaler.fit(df)\nX = df.drop(columns=["y"])\nX_train, X_test = train_test_split(X)',
+        "scaler.fit(df)\nX = df.dropna()\nX_train, X_test = train_test_split(X)",
+        "scaler.fit(df)\nX = df.to_numpy()\ntrain_test_split(X)",
+    ],
+)
+def test_fit_on_full_derived_split_input_flagged_high(
+    tmp_path: Path, src: str
+) -> None:
+    out = check_fit_on_full([_write(tmp_path, "a.py", src)])
+    assert len(out) == 1
+    assert out[0].severity == "high"
+
+
 def test_unrelated_earlier_fit_sharing_selector_not_flagged(tmp_path: Path) -> None:
     src = (
         "scaler.fit(other_df, cols)\nX = df[cols]\n"
