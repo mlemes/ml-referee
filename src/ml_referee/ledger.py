@@ -1,6 +1,10 @@
 """Hash-chained append-only ledger."""
 
-from dataclasses import dataclass
+import fcntl
+import hashlib
+import json
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -33,20 +37,79 @@ class Ledger:
 
     def append(self, kind: str, payload: dict[str, object]) -> Record:
         """Append."""
-        raise NotImplementedError
+        if kind not in {"trial", "eval", "seal"}:
+            msg = f"Unknown record kind: {kind}"
+            raise ValueError(msg)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a+", encoding="utf-8") as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            stream.seek(0)
+            records = [Record(**json.loads(line)) for line in stream]
+            result = self._verify(records)
+            if not result.ok:
+                raise ValueError(result.reason)
+            data = {
+                "index": len(records),
+                "kind": kind,
+                "payload": payload,
+                "time": datetime.now(UTC).isoformat(),
+                "prev_hash": records[-1].hash if records else "0" * 64,
+            }
+            digest = self._digest(data)
+            serialized = json.dumps({**data, "hash": digest}, sort_keys=True)
+            stream.write(serialized + "\n")
+            stream.flush()
+            self.path.with_name("head.txt").write_text(digest + "\n", encoding="utf-8")
+            return Record(**json.loads(serialized))
 
     def records(self) -> list[Record]:
         """Return all records."""
-        raise NotImplementedError
+        if not self.path.exists():
+            return []
+        with self.path.open(encoding="utf-8") as stream:
+            fcntl.flock(stream, fcntl.LOCK_SH)
+            return [Record(**json.loads(line)) for line in stream]
 
     def verify(self) -> VerifyResult:
         """Verify."""
-        raise NotImplementedError
+        try:
+            if not self.path.exists():
+                return self._verify([])
+            with self.path.open(encoding="utf-8") as stream:
+                fcntl.flock(stream, fcntl.LOCK_SH)
+                return self._verify([Record(**json.loads(line)) for line in stream])
+        except (ValueError, TypeError, OSError) as exc:
+            return VerifyResult(ok=False, reason=f"Invalid ledger: {exc}")
+
+    @staticmethod
+    def _digest(data: dict[str, object]) -> str:
+        canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _verify(self, records: list[Record]) -> VerifyResult:
+        previous = "0" * 64
+        for index, record in enumerate(records):
+            data = asdict(record)
+            del data["hash"]
+            if self._digest(data) != record.hash:
+                return VerifyResult(ok=False, reason=f"hash mismatch at record {index}")
+            if record.index != index or record.prev_hash != previous:
+                return VerifyResult(
+                    ok=False, reason=f"Chain mismatch at record {index}",
+                )
+            previous = record.hash
+        head = self.path.with_name("head.txt")
+        if head.exists():
+            if head.read_text(encoding="utf-8").strip() != previous:
+                return VerifyResult(ok=False, reason="Head hash mismatch")
+        elif records:
+            return VerifyResult(ok=False, reason="Missing head hash")
+        return VerifyResult(ok=True, reason="")
 
     def trial_count(self) -> int:
         """trial_count."""
-        raise NotImplementedError
+        return sum(record.kind == "trial" for record in self.records())
 
     def eval_count(self) -> int:
         """eval_count."""
-        raise NotImplementedError
+        return sum(record.kind == "eval" for record in self.records())
