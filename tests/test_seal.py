@@ -186,3 +186,37 @@ def test_seal_appends_seal_record(
     records = Ledger(store_dir(cfg) / "ledger.jsonl").records()
     assert [r.kind for r in records] == ["seal"]
     assert os.path.exists(store_dir(cfg) / "ledger.jsonl")
+
+
+def test_ledger_appendable_after_seal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, ev, _ = _setup(tmp_path, monkeypatch)
+    seal(cfg, ev)
+    ledger = Ledger(store_dir(cfg) / "ledger.jsonl")
+    ledger.append("trial", {"cmd": "x"})
+    assert ledger.verify().ok is True
+    assert [r.kind for r in ledger.records()] == ["seal", "trial"]
+
+
+def test_sealed_artifacts_read_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, ev, _ = _setup(tmp_path, monkeypatch)
+    seal(cfg, ev)
+    d = store_dir(cfg)
+    for name in ("holdout.parquet", "manifest.json", "evaluator.py", "source.csv"):
+        assert stat.S_IMODE((d / name).stat().st_mode) == 0o400, name
+    for name in ("ledger.jsonl", "head.txt"):
+        path = d / name
+        if path.exists():
+            assert stat.S_IMODE(path.stat().st_mode) & 0o200, name
+
+
+def test_workspace_train_file_keeps_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, ev, _ = _setup(tmp_path, monkeypatch)
+    cfg.train_path.chmod(0o640)
+    seal(cfg, ev)
+    assert stat.S_IMODE(cfg.train_path.stat().st_mode) == 0o640
