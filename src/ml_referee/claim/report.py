@@ -17,7 +17,7 @@ def build_report(  # noqa: PLR0913, PLR0917
     findings: list[Finding],
     validation_scores: list[float],
     p_value: float | None = None,
-    higher_is_better: bool = True,  # noqa: FBT001, FBT002
+    higher_is_better: bool | None = None,  # noqa: FBT001
 ) -> str:
     """Build the Markdown claim report."""
     adjusted = (
@@ -29,7 +29,10 @@ def build_report(  # noqa: PLR0913, PLR0917
     if validation_scores:
         value = selection_gap(
             validation_scores, result.value,
-            higher_is_better=manifest.higher_is_better and higher_is_better,
+            higher_is_better=(
+                manifest.higher_is_better
+                if higher_is_better is None else higher_is_better
+            ),
         )
         gap = f"Selection gap: {value:.12g}"
     audit = "\n".join(
@@ -46,20 +49,25 @@ def build_report(  # noqa: PLR0913, PLR0917
     ).replace("\u2014", "-")
 
 
-def claim(
+def claim(  # noqa: PLR0913, PLR0917
     cfg: Config,
     predictions: Path,
-    validation_scores: list[float],
+    validation_scores: list[float] | None = None,
     p_value: float | None = None,
     findings: list[Finding] | None = None,
+    higher_is_better: bool | None = None,  # noqa: FBT001
 ) -> str:
     """Verify the store, run one sealed eval, and return the report."""
+    validation_scores = validation_scores if validation_scores is not None else []
+    if validation_scores:
+        selection_gap(validation_scores, 0.0)
+    if p_value is not None:
+        bonferroni(p_value, 1)
     directory = store_dir(cfg)
     manifest = _verify_store(cfg, directory)
     trials = Ledger(directory / "ledger.jsonl").trial_count()
-    if p_value is not None:
-        bonferroni(p_value, max(1, trials))
     result = run_holdout_eval(cfg, predictions)
     return build_report(
         manifest, result, trials, findings or [], validation_scores, p_value,
+        higher_is_better=higher_is_better,
     )

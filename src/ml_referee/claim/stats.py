@@ -1,9 +1,15 @@
 """Multiple-comparison statistics for claims."""
 
+from math import isfinite
+
 
 def bonferroni(p: float, n: int) -> float:
     """Return the Bonferroni-adjusted p-value, capped at 1."""
-    if not 0 <= p <= 1 or n < 1:
+    if (
+        isinstance(p, bool) or isinstance(n, bool)
+        or not isfinite(p) or not isfinite(n)
+        or not 0 <= p <= 1 or n < 1
+    ):
         msg = "Require a p-value in [0, 1] and a positive trial count"
         raise ValueError(msg)
     return min(1.0, p * n)
@@ -11,7 +17,7 @@ def bonferroni(p: float, n: int) -> float:
 
 def bh_adjust(ps: list[float]) -> list[float]:
     """Return Benjamini-Hochberg adjusted p-values in input order."""
-    if any(not 0 <= p <= 1 for p in ps):
+    if any(isinstance(p, bool) or not isfinite(p) or not 0 <= p <= 1 for p in ps):
         msg = "Require p-values in [0, 1]"
         raise ValueError(msg)
     adjusted = [0.0] * len(ps)
@@ -32,6 +38,12 @@ def selection_gap(
     """Return the optimism of the best validation score over the holdout."""
     if not validation_scores:
         msg = "Require at least one validation score"
+        raise ValueError(msg)
+    if any(
+        isinstance(score, bool) or not isfinite(score)
+        for score in [*validation_scores, holdout]
+    ):
+        msg = "Require finite scores, excluding bool"
         raise ValueError(msg)
     if higher_is_better:
         return max(validation_scores) - holdout
