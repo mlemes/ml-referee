@@ -81,7 +81,7 @@ DENIED_CMDS = [
 def test_bash_touching_store_denied(cmd: str, policy: Policy) -> None:
     d = decide(bash(cmd.format(store=policy.store), policy), policy)
     assert d.allow is False
-    assert d.reason
+    assert str(policy.store) in d.reason
 
 
 @pytest.mark.parametrize("cmd", DENIED_CMDS)
@@ -152,4 +152,143 @@ def test_write_workspace_train_py_allowed(policy: Policy) -> None:
 
 def test_unknown_tool_name_without_paths_allowed(policy: Policy) -> None:
     ev: dict[str, object] = {"tool_name": "TodoWrite", "tool_input": {}, "cwd": "/"}
+    assert decide(ev, policy).allow is True
+
+
+def fill(text: str, policy: Policy) -> str:
+    share = policy.store.parent.parent
+    return (
+        text.replace("<store>", str(policy.store))
+        .replace("<share>", str(share))
+        .replace("<home>", str(share.parent.parent))
+    )
+
+
+HOME_STORE = "~/.local/share/ml-referee/proj1"
+BYPASS_CMDS = [
+    # (1) variable-built path
+    "X=ml-referee; cat ~/.local/share/$X/proj1/holdout.parquet",
+    "X=ml-referee; cat <share>/$X/proj1/holdout.parquet",
+    # (2) cd chain
+    "cd ~/.local; cd share; cd ml-referee; cd proj1; cat holdout.parquet",
+    "cd <share>; cd ml-referee; cd proj1; cat holdout.parquet",
+    # (3) quoting splits the name
+    'dd if=~/.local/share/ml-"referee"/proj1/holdout.parquet',
+    'dd if=<share>/ml-"referee"/proj1/holdout.parquet',
+    # (4) env --chdir
+    'env --chdir=~/.local/share/ml-"referee"/proj1 cat holdout.parquet',
+    'env --chdir=<store> cat holdout.parquet',
+    # (5) brace expansion
+    "cat ~/.local/share/ml-{referee,x}/proj1/holdout.parquet",
+    "cat <share>/ml-{referee,x}/proj1/holdout.parquet",
+    # (6) string concatenation in python
+    "python -c \"open('/home/u/.local/share/ml-' + 'referee/proj1/holdout.parquet')\"",
+    "python -c \"open('<share>/ml-' + 'referee/proj1/holdout.parquet')\"",
+    # (7) process substitution
+    'cat <(~/.local/share/ml-"referee"/proj1/evaluator.py)',
+    'cat <(<share>/ml-"referee"/proj1/evaluator.py)',
+    # (8) here-doc
+    "sh << 'EOF'\ncd ~/.local; cd share; cd ml-referee; cd proj1; "
+    "cat holdout.parquet\nEOF",
+    "sh << 'EOF'\ncd <share>; cd ml-referee; cd proj1; cat holdout.parquet\nEOF",
+    # (9) copy the parent, then read the copy
+    "cp -r ~/.local/share ./leak && cat leak/ml-referee/proj1/holdout.parquet",
+    "cp -r <share> ./leak && cat leak/ml-referee/proj1/holdout.parquet",
+    # (10) symlink to the parent
+    'ln -s ~/.local/share s && cat s/ml-"referee"/proj1/holdout.parquet',
+    'ln -s <share> s && cat s/ml-"referee"/proj1/holdout.parquet',
+    # (11) two variables
+    "A=ml; B=referee; cat ~/.local/share/$A-$B/proj1/holdout.parquet",
+    "A=ml; B=referee; cat <share>/$A-$B/proj1/holdout.parquet",
+    # (12) custom store parent
+    "cp -r <share> ./leak",
+    "cp -r <share>/.. ./leak",
+    # (13) config protection through Bash
+    "rm .ml-referee.toml",
+    "sed -i s/budget/9/ .ml-referee.toml",
+    "echo x > .ml-referee.toml",
+    "mv .ml-referee.toml /tmp/x",
+    # (16) the CLI exemption must not hide store arguments
+    "./ml-referee <store>/holdout.parquet",
+    "ml-referee eval <store>/holdout.parquet",
+    f"ml-referee eval {HOME_STORE}/holdout.parquet",
+]
+
+
+@pytest.mark.parametrize("cmd", BYPASS_CMDS)
+def test_bash_bypass_denied(cmd: str, policy: Policy) -> None:
+    d = decide(bash(fill(cmd, policy), policy), policy)
+    assert d.allow is False
+    assert d.reason
+
+
+def _event(name: str, inputs: dict[str, object], policy: Policy) -> dict[str, object]:
+    return {"tool_name": name, "tool_input": inputs, "cwd": str(policy.workspace)}
+
+
+def test_write_content_with_store_path_denied(policy: Policy) -> None:
+    ev = _event(
+        "Write",
+        {"file_path": "notes.py", "content": f"P = '{policy.store}/holdout.parquet'"},
+        policy,
+    )
+    assert decide(ev, policy).allow is False
+
+
+def test_edit_new_string_with_store_path_denied(policy: Policy) -> None:
+    ev = _event(
+        "Edit",
+        {
+            "file_path": "train.py",
+            "old_string": "print(1)",
+            "new_string": f"open('{policy.store}/holdout.parquet')",
+        },
+        policy,
+    )
+    assert decide(ev, policy).allow is False
+
+
+@pytest.mark.parametrize(
+    ("name", "key", "value"),
+    [
+        ("Grep", "path", "~/.local/share"),
+        ("Grep", "path", "<share>"),
+        ("Glob", "pattern", "<share>/**"),
+        ("Read", "file_path", "~/.local/share/ml-referee"),
+        ("Grep", "path", "~/.local/share/ml-referee"),
+    ],
+)
+def test_search_and_read_tools_on_store_parent_denied(
+    name: str, key: str, value: str, policy: Policy
+) -> None:
+    ev = tool(name, key, fill(value, policy), policy)
+    d = decide(ev, policy)
+    assert d.allow is False
+    assert d.reason
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "echo $PATH",
+        "echo $?",
+        'for f in *.py; do python "$f"; done',
+        "awk '{print $1}' train.csv",
+        "git status",
+        "python train.py --lr 3e-4",
+        "cat .ml-referee.toml",
+        "python holdout_eval.py",
+        "ml-referee eval predictions.csv",
+    ],
+)
+def test_benign_commands_still_allowed(cmd: str, policy: Policy) -> None:
+    assert decide(bash(cmd, policy), policy).allow is True
+
+
+def test_write_benign_content_allowed(policy: Policy) -> None:
+    ev = _event(
+        "Write",
+        {"file_path": "train.py", "content": "holdout_score = model.score(X)"},
+        policy,
+    )
     assert decide(ev, policy).allow is True

@@ -180,3 +180,21 @@ def test_guard_median_latency_under_100ms(env: tuple[Path, Path]) -> None:
         times.append(time.perf_counter() - start)
         assert d.allow is False
     assert statistics.median(times) < 0.1
+
+
+def test_main_denies_store_command_from_workspace_subdirectory(
+    env: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ws, store = env
+    sub = ws / "sub" / "deeper"
+    sub.mkdir(parents=True)
+    ev = {
+        "tool_name": "Bash",
+        "tool_input": {"command": f"cat {store}/holdout.parquet"},
+        "cwd": str(sub),
+    }
+    code, out = run_main(json.dumps(ev), monkeypatch, capsys)
+    assert code == 0
+    assert_deny(out)
