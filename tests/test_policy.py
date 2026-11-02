@@ -252,7 +252,6 @@ def test_edit_new_string_with_store_path_denied(policy: Policy) -> None:
     ("name", "key", "value"),
     [
         ("Grep", "path", "~/.local/share"),
-        ("Grep", "path", "<share>"),
         ("Glob", "pattern", "<share>/**"),
         ("Read", "file_path", "~/.local/share/ml-referee"),
         ("Grep", "path", "~/.local/share/ml-referee"),
@@ -292,3 +291,48 @@ def test_write_benign_content_allowed(policy: Policy) -> None:
         policy,
     )
     assert decide(ev, policy).allow is True
+
+
+def test_grep_path_three_levels_above_store_denied(policy: Policy) -> None:
+    ev = tool("Grep", "path", str(policy.store.parent.parent.parent), policy)
+    d = decide(ev, policy)
+    assert d.allow is False
+    assert d.reason
+
+
+EXTRA_DENIED = [
+    "cp -r ~/.local ./leak",
+    "find ~/.local -name holdout.parquet -exec cat {} +",
+    "ln -s ~/.local s && cat s/*/*/*/holdout.parquet",
+    "rm .ml*",
+    "sed -i s/budget/9/ .ml*",
+    "mv .ml-r* /tmp/x",
+    "dd if=~/.l*/share/ml-r*/proj1/holdout.parquet",
+]
+
+
+@pytest.mark.parametrize("cmd", EXTRA_DENIED)
+def test_bash_extra_bypass_denied(cmd: str, policy: Policy) -> None:
+    d = decide(bash(cmd, policy), policy)
+    assert d.allow is False
+    assert d.reason
+
+
+def test_bash_copy_of_store_ancestors_denied(policy: Policy) -> None:
+    ws = policy.workspace
+    ancestors = [
+        p
+        for p in policy.store.parents
+        if str(p) != "/" and not (p == ws or p in ws.parents)
+    ]
+    assert ancestors
+    for p in ancestors:
+        d = decide(bash(f"cp -r {p} ./leak", policy), policy)
+        assert d.allow is False, str(p)
+
+
+@pytest.mark.parametrize(
+    "cmd", ["ls .ml*", "cat .ml-referee.toml", "rm build/*.pyc"]
+)
+def test_config_glob_benign_allowed(cmd: str, policy: Policy) -> None:
+    assert decide(bash(cmd, policy), policy).allow is True
