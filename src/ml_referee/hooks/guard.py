@@ -16,12 +16,16 @@ def main() -> int:
             decision = Decision(allow=False, reason="Malformed hook event")
         else:
             workspace = Path(event["cwd"]).resolve()
-            config = workspace / ".ml-referee.toml"
-            try:
-                config.lstat()
-            except FileNotFoundError:
+            for directory in (workspace, *workspace.parents):
+                config = directory / ".ml-referee.toml"
+                try:
+                    config.lstat()
+                except FileNotFoundError:
+                    continue
+                decision = decide(event, build_policy(load_config(config), directory))
+                break
+            else:
                 return 0
-            decision = decide(event, build_policy(load_config(config), workspace))
     except (ValueError, OSError, RuntimeError, ConfigError) as exc:
         decision = Decision(allow=False, reason=f"Guard cannot validate event: {exc}")
     if not decision.allow:

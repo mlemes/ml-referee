@@ -40,43 +40,24 @@ class Policy:
         except (OSError, RuntimeError, ValueError):
             return True
 
-    def _touches(self, text: str) -> bool:  # noqa: C901, PLR0911
-        # Only a single CLI invocation gets the trusted-program exception.
-        lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        lexer.commenters = ""
-        tokens = list(lexer)
-        if (
-            tokens
-            and Path(tokens[0]).name == "ml-referee"
-            and not any(char in text for char in ";&|<>()`\n$")
-        ):
-            return False
-        if str(self.store) in text or (
-            "ml-referee/" in text
-            and (".local/share" in text or "XDG_DATA_HOME" in text)
-        ):
-            return True
-        variables = dict(os.environ)
-        raw_path = _resolve(_expand(text, variables), self.workspace)
-        if raw_path == self.store or self.store in raw_path.parents:
-            return True
-        cwd = self.workspace
-        for index, token in enumerate(tokens):
-            value = _expand(token, variables)
-            assignment = re.fullmatch(r"([A-Za-z_]\w*)=(.*)", value)
-            if assignment:
-                variables[assignment[1]] = assignment[2]
-                value = assignment[2]
-            if str(self.store) in value:
+    def _touches(self, text: str) -> bool:
+        normalized = re.sub(r"[^A-Za-z0-9_./~$-]", "", text)
+        for value in (text, normalized):
+            if any(
+                marker in value
+                for marker in (
+                    str(self.store),
+                    str(self.store.parent.parent),
+                    "ml-referee",
+                    ".local/share",
+                    "XDG_DATA_HOME",
+                )
+            ) or re.search(r"\.local.*share", value):
                 return True
-            if "$" in value or "`" in value:
-                return True
-            path = _resolve(value, cwd)
-            if path == self.store or self.store in path.parents:
-                return True
-            if glob.has_magic(value):
-                for match in glob.iglob(str(cwd / value)):  # noqa: PTH207
+        for token in shlex.split(text, posix=True):
+            if glob.has_magic(token):
+                value = _expand(token, dict(os.environ))
+                for match in glob.iglob(str(self.workspace / value)):  # noqa: PTH207
                     resolved = Path(match).resolve()
                     if (
                         resolved == self.store
@@ -84,8 +65,6 @@ class Policy:
                         or resolved in self.store.parents
                     ):
                         return True
-            if index and tokens[index - 1] == "cd":
-                cwd = path
         return False
 
 
@@ -102,15 +81,18 @@ def build_policy(cfg: Config, workspace: Path) -> Policy:
     return Policy(store_dir(cfg).resolve(), workspace.resolve())
 
 
-def decide(event: dict[str, object], policy: Policy) -> Decision:  # noqa: C901, PLR0911
+def decide(event: dict[str, object], policy: Policy) -> Decision:  # noqa: C901, PLR0911, PLR0912
     """Decide on one PreToolUse event."""
+    denied = Decision(
+        allow=False, reason=f"Access to sealed store {policy.store} denied",
+    )
     name = event.get("tool_name")
     inputs = event.get("tool_input")
     if not isinstance(name, str) or not isinstance(inputs, dict):
-        return Decision(allow=False, reason="Malformed tool event")
+        return denied
     cwd = event.get("cwd", str(policy.workspace))
     if not isinstance(cwd, str):
-        return Decision(allow=False, reason="Malformed working directory")
+        return denied
     try:
         active = Policy(policy.store, _resolve(cwd, policy.workspace))
         required = {
@@ -121,23 +103,50 @@ def decide(event: dict[str, object], policy: Policy) -> Decision:  # noqa: C901,
             "Glob": "pattern",
         }
         if name in required and not isinstance(inputs.get(required[name]), str):
-            return Decision(allow=False, reason="Missing tool path or command")
-        for key in ("command", "file_path", "path", "pattern"):
+            return denied
+        keys = ["command", "file_path", "path", "pattern"]
+        if name in {"Write", "Edit"}:
+            keys.extend(("content", "new_string"))
+        for key in keys:
             value = inputs.get(key)
             if value is None:
                 continue
             if not isinstance(value, str):
-                return Decision(allow=False, reason="Malformed tool path or command")
+                return denied
+            if name == "Bash" and key == "command":
+                tokens = shlex.split(value, posix=True)
+                simple = not any(char in value for char in ";&|<>()`\n$")
+                if ".ml-referee.toml" in value:
+                    if not (
+                        simple
+                        and tokens
+                        and tokens[0]
+                        in {"cat", "head", "tail", "less", "ls", "grep", "wc", "stat"}
+                    ):
+                        return denied
+                    value = value.replace(".ml-referee.toml", "")
+                # Only a single CLI invocation gets the trusted-program exception.
+                if simple and tokens:
+                    if tokens[0] == "ml-referee":
+                        value = " ".join(tokens[1:])
+                    elif tokens[:3] == ["python", "-m", "ml_referee"]:
+                        value = " ".join(tokens[3:])
             if active.touches_sealed(value):
-                return Decision(
-                    allow=False, reason=f"Access to sealed store {policy.store} denied",
-                )
+                return denied
+            if name in {"Grep", "Glob", "Read"} and key in {
+                "path",
+                "pattern",
+                "file_path",
+            }:
+                path = _resolve(_expand(value, dict(os.environ)), active.workspace)
+                if path in policy.store.parents and not (
+                    path == policy.workspace or path in policy.workspace.parents
+                ):
+                    return denied
             if name in {"Write", "Edit"} and key == "file_path":
                 path = _resolve(_expand(value, dict(os.environ)), active.workspace)
                 if path == (policy.workspace / ".ml-referee.toml").resolve():
-                    return Decision(
-                        allow=False, reason="Workspace configuration is protected",
-                    )
+                    return denied
     except (OSError, RuntimeError, ValueError):
-        return Decision(allow=False, reason="Cannot safely resolve tool paths")
+        return denied
     return Decision(allow=True, reason="No sealed store access")
