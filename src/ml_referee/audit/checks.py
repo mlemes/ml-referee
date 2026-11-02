@@ -115,6 +115,62 @@ def _scope_nodes(node: ast.AST) -> list[ast.AST]:
     return nodes
 
 
+def _data_names(node: ast.AST) -> set[str]:
+    """Collect data dependencies, excluding callees and subscript selectors."""
+    if isinstance(node, ast.Name):
+        return {node.id}
+    if isinstance(node, ast.Subscript):
+        return _data_names(node.value)
+    children = (
+        [*node.args, *(keyword.value for keyword in node.keywords)]
+        if isinstance(node, ast.Call)
+        else ast.iter_child_nodes(node)
+    )
+    return {name for child in children for name in _data_names(child)}
+
+
+def _split_inputs(nodes: list[ast.AST], split: ast.Call) -> set[str]:
+    """Resolve assignment dependencies in both directions before a split."""
+    inputs = {
+        node.id
+        for arg in split.args
+        for node in ast.walk(arg)
+        if isinstance(node, ast.Name)
+    }
+    assignments = sorted(
+        (
+            node
+            for node in nodes
+            if isinstance(node, (ast.Assign, ast.AnnAssign))
+            and node.lineno < split.lineno
+        ),
+        key=lambda node: node.lineno,
+        reverse=True,
+    )
+    dependencies = []
+    for assignment in assignments:
+        targets = {
+            node.id
+            for target in (
+                assignment.targets
+                if isinstance(assignment, ast.Assign)
+                else [assignment.target]
+            )
+            for node in ast.walk(target)
+            if isinstance(node, ast.Name)
+        }
+        if assignment.value is not None:
+            dependencies.append((targets, _data_names(assignment.value)))
+    while True:
+        previous = inputs.copy()
+        for targets, sources in dependencies:
+            if inputs & (targets | sources):
+                inputs.update(targets | sources)
+        if inputs == previous:
+            break
+    return inputs
+
+
 def _fit_findings(scope: ast.AST, path: Path) -> list[Finding]:
     """Match earlier fits to split inputs and their assignment dependencies."""
     nodes = _scope_nodes(scope)
@@ -128,41 +184,16 @@ def _fit_findings(scope: ast.AST, path: Path) -> list[Finding]:
         )
         if name != "train_test_split":
             continue
-        inputs = {
-            node.id
-            for arg in split.args
-            for node in ast.walk(arg)
-            if isinstance(node, ast.Name)
-        }
-        assignments = sorted(
-            (
-                node
-                for node in nodes
-                if isinstance(node, ast.Assign) and node.lineno <= split.lineno
-            ),
-            key=lambda node: node.lineno,
-            reverse=True,
-        )
-        for assignment in assignments:
-            targets = {
-                node.id
-                for target in assignment.targets
-                for node in ast.walk(target)
-                if isinstance(node, ast.Name)
-            }
-            if inputs & targets:
-                inputs.update(
-                    node.id
-                    for node in ast.walk(assignment.value)
-                    if isinstance(node, ast.Name)
-                )
+        inputs = _split_inputs(nodes, split)
         for fit in calls:
             if (
                 isinstance(fit.func, ast.Attribute)
                 and fit.func.attr in {"fit", "fit_transform"}
                 and fit.lineno < split.lineno
                 and any(
-                    isinstance(arg, ast.Name) and arg.id in inputs for arg in fit.args
+                    isinstance(node, ast.Name) and node.id in inputs
+                    for arg in [*fit.args, *(kw.value for kw in fit.keywords)]
+                    for node in ast.walk(arg)
                 )
             ):
                 finding = Finding(
