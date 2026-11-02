@@ -2,7 +2,10 @@
 
 import hashlib
 import json
+import os
 import shutil
+import stat
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -66,7 +69,7 @@ def seal(cfg: Config, evaluator_src: Path) -> Manifest:
         msg = f"Store already exists: {directory}"
         raise SealError(msg) from exc
     directory.chmod(0o700)
-    source_mode = cfg.train_path.stat().st_mode & 0o777
+    source_mode = stat.S_IMODE(cfg.train_path.stat().st_mode)
     source = directory / f"source{cfg.train_path.suffix}"
     try:
         shutil.move(str(cfg.train_path), source)
@@ -85,12 +88,9 @@ def seal(cfg: Config, evaluator_src: Path) -> Manifest:
             json.dumps(asdict(manifest), sort_keys=True) + "\n", encoding="utf-8",
         )
         Ledger(directory / "ledger.jsonl").append("seal", asdict(manifest))
-        if cfg.train_path.suffix == ".csv":
-            frame.loc[~mask].to_csv(cfg.train_path, index=False)
-        else:
-            frame.loc[~mask].to_parquet(cfg.train_path, index=False)
+        _write_train(frame.loc[~mask], cfg.train_path, source_mode)
         for path in directory.iterdir():
-            path.chmod(0o400)
+            path.chmod(0o600 if path.name in {"ledger.jsonl", "head.txt"} else 0o400)
     except Exception:
         # Restore the original data before removing any partial sealed artifacts.
         if source.exists():
@@ -99,6 +99,20 @@ def seal(cfg: Config, evaluator_src: Path) -> Manifest:
         shutil.rmtree(directory)
         raise
     return manifest
+
+
+def _write_train(frame: pd.DataFrame, path: Path, mode: int) -> None:
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as temp:
+        train_temp = Path(temp.name)
+    try:
+        if path.suffix == ".csv":
+            frame.to_csv(train_temp, index=False)
+        else:
+            frame.to_parquet(train_temp, index=False)
+        train_temp.chmod(mode)
+        os.replace(train_temp, path)  # noqa: PTH105
+    finally:
+        train_temp.unlink(missing_ok=True)
 
 
 def verify_manifest(cfg: Config) -> bool:
