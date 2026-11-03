@@ -32,8 +32,12 @@ class Manifest:
     n_holdout: int
 
 
-def seal(cfg: Config, evaluator_src: Path) -> Manifest:
+def seal(
+    cfg: Config, evaluator_src: Path, holdout_src: Path | None = None,
+) -> Manifest:
     """Move the holdout rows and the evaluator into the sealed store."""
+    if holdout_src is not None:
+        raise NotImplementedError
     directory = store_dir(cfg)
     if directory.exists():
         msg = f"Store already exists: {directory}"

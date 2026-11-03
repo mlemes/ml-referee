@@ -345,3 +345,48 @@ def test_claim_out_readonly_file_exits_one_without_budget(
     assert main(["claim", "--predictions", str(preds), "--out", str(ro)]) == 1
     assert ro.read_text() == "old"
     assert _ledger(ws).eval_count() == 0
+
+
+def _holdout_csv(ws: Path) -> Path:
+    path = ws / "hold.csv"
+    pd.DataFrame({"x": [0.1, 0.2, 0.3], "y": [1, 0, 1]}).to_csv(path, index=False)
+    return path
+
+
+def test_seal_holdout_file_option(ws: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    train = ws / "data" / "train.csv"
+    before = train.read_bytes()
+    hold = _holdout_csv(ws)
+    code = main(["seal", "--evaluator", str(ws / "ev_src.py"),
+                 "--holdout-file", str(hold)])
+    cap = capsys.readouterr()
+    assert code == 0
+    assert "3" in cap.out
+    assert train.read_bytes() == before
+    sealed = pd.read_parquet(store_dir(load_config(ws / ".ml-referee.toml")) / "holdout.parquet")
+    assert list(sealed["y"]) == [1, 0, 1]
+    assert _ledger(ws).eval_count() == 0
+
+
+def test_seal_holdout_file_bad_columns_exits_one_no_store(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bad = ws / "bad.csv"
+    pd.DataFrame({"x": [0.1], "z": [1]}).to_csv(bad, index=False)
+    code = main(["seal", "--evaluator", str(ws / "ev_src.py"), "--holdout-file", str(bad)])
+    cap = capsys.readouterr()
+    assert code == 1
+    assert cap.err
+    assert "NotImplementedError" not in cap.err
+    assert not store_dir(load_config(ws / ".ml-referee.toml")).exists()
+
+
+def test_seal_holdout_file_missing_exits_one_no_store(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(["seal", "--evaluator", str(ws / "ev_src.py"),
+                 "--holdout-file", str(ws / "nope.csv")])
+    cap = capsys.readouterr()
+    assert code == 1
+    assert cap.err
+    assert not store_dir(load_config(ws / ".ml-referee.toml")).exists()
