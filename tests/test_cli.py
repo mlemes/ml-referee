@@ -390,3 +390,103 @@ def test_seal_holdout_file_missing_exits_one_no_store(
     assert code == 1
     assert cap.err
     assert not store_dir(load_config(ws / ".ml-referee.toml")).exists()
+
+
+TOML_GROUP = TOML.replace('label = "y"', 'label = "y"\ngroup = "g"')
+
+
+def _group_ws(ws: Path, capsys: pytest.CaptureFixture[str]) -> pd.DataFrame:
+    (ws / ".ml-referee.toml").write_text(TOML_GROUP)
+    train = ws / "data" / "train.csv"
+    df = pd.read_csv(train)
+    df["g"] = np.arange(len(df))
+    df.to_csv(train, index=False)
+    _seal(ws, capsys)
+    return pd.read_csv(train)
+
+
+def _against_lines(out: str) -> list[dict[str, str]]:
+    return [json.loads(x) for x in out.splitlines() if x.strip()]
+
+
+def test_audit_against_entity_overlap_tagged(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    train = _group_ws(ws, capsys)
+    vis = ws / "visible.csv"
+    pd.DataFrame({"x": [99.5, 98.5], "g": train["g"].iloc[:2].to_numpy()}).to_csv(
+        vis, index=False
+    )
+    code = main(["audit", "--against", str(vis)])
+    lines = _against_lines(capsys.readouterr().out)
+    hits = [x for x in lines if x["check"] == "entity_overlap" and x["severity"] == "high"]
+    assert code == 3
+    assert hits
+    assert all(x["detail"].endswith("[against=visible.csv]") for x in hits)
+
+
+def test_audit_against_exact_duplicates_high(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    train = _group_ws(ws, capsys)
+    vis = ws / "visible.csv"
+    train.iloc[:3].to_csv(vis, index=False)
+    code = main(["audit", "--against", str(vis)])
+    lines = _against_lines(capsys.readouterr().out)
+    hits = [x for x in lines if x["check"] == "duplicates" and "[against=" in x["detail"]]
+    assert code == 3
+    assert hits
+    assert all(x["severity"] == "high" for x in hits)
+
+
+def test_audit_against_clean_gives_no_findings(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _group_ws(ws, capsys)
+    vis = ws / "visible.csv"
+    pd.DataFrame({"x": [90.5, 91.5], "g": [1000, 1001]}).to_csv(vis, index=False)
+    code = main(["audit", "--against", str(vis)])
+    lines = _against_lines(capsys.readouterr().out)
+    assert code == 0
+    assert not [x for x in lines if "[against=" in x["detail"]]
+
+
+def test_audit_against_output_has_no_label_values(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    train = _group_ws(ws, capsys)
+    vis = ws / "visible.csv"
+    vis_df = train.iloc[:3].copy()
+    vis_df["y"] = ["SECRETLABEL_A", "SECRETLABEL_B", "SECRETLABEL_C"]
+    vis_df.to_csv(vis, index=False)
+    main(["audit", "--against", str(vis)])
+    out = capsys.readouterr().out
+    assert "[against=visible.csv]" in out
+    assert "SECRETLABEL" not in out
+
+
+def test_claim_against_embeds_findings(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    train = _group_ws(ws, capsys)
+    vis = ws / "visible.csv"
+    train.iloc[:3].to_csv(vis, index=False)
+    code = main(["claim", "--predictions", str(_preds(ws)), "--against", str(vis)])
+    report = capsys.readouterr().out
+    section = report.split("## Audit findings")[1].split("## Limits")[0]
+    assert code == 0
+    assert "[against=visible.csv]" in section
+    assert "- high: duplicates:" in section
+
+
+def test_claim_against_missing_exits_one_budget_unchanged(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seal(ws, capsys)
+    code = main(
+        ["claim", "--predictions", str(_preds(ws)), "--against", str(ws / "nope.csv")]
+    )
+    cap = capsys.readouterr()
+    assert code == 1
+    assert cap.err
+    assert _ledger(ws).eval_count() == 0
