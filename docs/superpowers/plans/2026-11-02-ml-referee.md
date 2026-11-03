@@ -48,10 +48,13 @@ Each line names an input the spec implies but no task would otherwise test. The 
 ```python
 def test_package_has_version():
     import ml_referee
+
     assert ml_referee.__version__ == "0.1.0"
+
 
 def test_manifest_name():
     import json, pathlib
+
     m = json.loads(pathlib.Path(".claude-plugin/plugin.json").read_text())
     assert m["name"] == "ml-referee"
 ```
@@ -76,10 +79,12 @@ def test_manifest_name():
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-def test_load_valid_config(tmp_path): ...            # all fields parsed, budget defaults to 1
-def test_missing_label_raises(tmp_path): ...         # pytest.raises(ConfigError)
-def test_budget_below_one_raises(tmp_path): ...      # holdout_budget = 0 -> ConfigError
-def test_store_dir_uses_xdg(tmp_path, monkeypatch): ...  # XDG_DATA_HOME honored, ends with project_id
+def test_load_valid_config(tmp_path): ...  # all fields parsed, budget defaults to 1
+def test_missing_label_raises(tmp_path): ...  # pytest.raises(ConfigError)
+def test_budget_below_one_raises(tmp_path): ...  # holdout_budget = 0 -> ConfigError
+def test_store_dir_uses_xdg(
+    tmp_path, monkeypatch
+): ...  # XDG_DATA_HOME honored, ends with project_id
 ```
 
 - [ ] **Step 2: Run** `pytest -q tests/test_config.py`. Expected: FAIL.
@@ -126,7 +131,7 @@ def test_concurrent_append_keeps_chain(tmp_path): ...       # two processes, cha
 - Consumes: `Config`, `store_dir`, `Ledger`.
 - Produces:
   - `@dataclass(frozen=True) class Manifest: holdout_sha256: str; evaluator_sha256: str; seed: int; metric: str; higher_is_better: bool; n_holdout: int`
-  - `seal(cfg: Config, evaluator_src: Path) -> Manifest`
+  - `seal(cfg: Config, evaluator_src: Path) -> Manifest`. It moves the source data into the store and rewrites the workspace train file with the non-holdout rows. It creates no validation split.
   - `verify_manifest(cfg: Config) -> bool`
   - `load_manifest(cfg: Config) -> Manifest`
 
@@ -164,22 +169,30 @@ def test_seal_appends_seal_record(...):             # ledger has one "seal" reco
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-@pytest.mark.parametrize("cmd", [
-    "cat {store}/holdout.parquet",
-    "cat $HOME/.local/share/ml-referee/*/holdout*",
-    "cd {store} && ls",
-    "ln -s {store} link && cat link/holdout.parquet",
-    "python -c \"open('{store}/holdout.parquet')\"",
-    "X={store}; cat $X/holdout.parquet",
-])
-def test_bash_touching_store_denied(cmd, policy): ...   # decide(...).allow is False, reason names the store
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "cat {store}/holdout.parquet",
+        "cat $HOME/.local/share/ml-referee/*/holdout*",
+        "cd {store} && ls",
+        "ln -s {store} link && cat link/holdout.parquet",
+        "python -c \"open('{store}/holdout.parquet')\"",
+        "X={store}; cat $X/holdout.parquet",
+    ],
+)
+def test_bash_touching_store_denied(
+    cmd, policy
+): ...  # decide(...).allow is False, reason names the store
+
 
 def test_edit_of_sealed_evaluator_denied(policy): ...
 def test_read_of_store_path_denied(policy): ...
 def test_train_command_on_workspace_allowed(policy): ...  # "python train.py" -> allow
-def test_malformed_json_denies_path_tools(capsys): ...     # main() on b"{not json" -> deny output
+def test_malformed_json_denies_path_tools(
+    capsys,
+): ...  # main() on b"{not json" -> deny output
 def test_unknown_tool_name_without_paths_allowed(policy): ...
-def test_guard_median_latency_under_100ms(policy): ...     # 200 calls, median < 0.1 s
+def test_guard_median_latency_under_100ms(policy): ...  # 200 calls, median < 0.1 s
 ```
 
 - [ ] **Step 2: Run** `pytest -q tests/test_policy.py tests/test_guard.py`. Expected: FAIL.
@@ -256,7 +269,7 @@ def test_evaluator_nonzero_exit_does_not_consume_budget(...): ...
 def test_duplicate_rows_across_splits_flagged_high(): ...
 def test_clean_split_has_no_findings(): ...
 def test_entity_overlap_flagged(): ...
-def test_group_column_absent_returns_info_not_crash(): ...      # review focus 5
+def test_group_column_absent_returns_info_not_crash(): ...  # review focus 5
 def test_group_column_with_nan_returns_finding_not_crash(): ...  # review focus 5
 def test_single_feature_with_auc_1_flagged_as_target_leak(): ...
 def test_scaler_fit_before_split_flagged(tmp_path): ...
@@ -278,19 +291,25 @@ def test_scaler_fit_after_split_not_flagged(tmp_path): ...
 - Produces:
   - `bonferroni(p: float, n: int) -> float`
   - `bh_adjust(ps: list[float]) -> list[float]`
-  - `selection_gap(validation_scores: list[float], holdout: float) -> float` (max validation minus holdout)
-  - `build_report(manifest: Manifest, result: EvalResult, trials: int, findings: list[Finding], validation_scores: list[float]) -> str`
-  - `claim(cfg: Config, predictions: Path) -> str` (verifies ledger and manifest, runs one sealed eval, returns the report)
+  - `selection_gap(validation_scores: list[float], holdout: float, higher_is_better: bool = True) -> float` (max validation minus holdout, or holdout minus min validation when lower is better)
+  - `build_report(manifest: Manifest, result: EvalResult, trials: int, findings: list[Finding], validation_scores: list[float], p_value: float | None = None, higher_is_better: bool | None = None) -> str`
+  - `claim(cfg: Config, predictions: Path, validation_scores: list[float] | None = None, p_value: float | None = None, findings: list[Finding] | None = None, higher_is_better: bool | None = None) -> str` (verifies ledger and manifest, runs one sealed eval, returns the report)
 
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-def test_bonferroni_caps_at_one(): assert bonferroni(0.04, 50) == 1.0
-def test_bonferroni_scales(): assert bonferroni(0.01, 5) == pytest.approx(0.05)
-def test_bh_matches_known_example(): ...    # [0.01, 0.04, 0.03, 0.005] -> [0.02, 0.04, 0.04, 0.02]
+def test_bonferroni_caps_at_one():
+    assert bonferroni(0.04, 50) == 1.0
+
+
+def test_bonferroni_scales():
+    assert bonferroni(0.01, 5) == pytest.approx(0.05)
+
+
+def test_bh_matches_known_example(): ...  # [0.01, 0.04, 0.03, 0.005] -> [0.02, 0.04, 0.04, 0.02]
 def test_selection_gap_positive_when_val_exceeds_holdout(): ...
 def test_report_contains_trial_count_and_limits_sentence(): ...
-def test_claim_refuses_when_ledger_invalid(): ...   # raises IntegrityError
+def test_claim_refuses_when_ledger_invalid(): ...  # raises IntegrityError
 ```
 
 - [ ] **Step 2: Run** `pytest -q tests/test_claim.py`. Expected: FAIL.
@@ -329,14 +348,14 @@ def test_end_to_end_seal_eval_claim(tmp_path): ...   # synthetic data; claim rep
 
 **Interfaces:**
 - Consumes: `decide`, `Policy`, `Ledger`, `run_holdout_eval`.
-- Produces: `run_all(policy: Policy, conditions: tuple[str, ...]) -> dict[str, dict[str, float]]` (block rate per attack and condition). Conditions: `"C0"`, `"C2"`, `"C3"` from `docs/research/evaluation/protocol.md`. C1 is an agent condition and is excluded here.
+- Produces: `run_all(env: AttackEnv, conditions: tuple[str, ...] = ("C0", "C2", "C3")) -> dict[str, dict[str, float]]`. It returns the block rate per attack and condition. Build `env` with `bench.env.make_env(tmp_path)`. A bare `Policy` raises `TypeError`. Conditions: `"C0"`, `"C2"`, `"C3"` from `docs/research/evaluation/protocol.md`. C1 is an agent condition and is excluded here.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-def test_each_attack_class_has_a_script(): ...             # A1..A8 present
-def test_c3_blocks_all_scripted_attacks_a1_to_a2(): ...    # block rate == 1.0 for A1, A2 incl. 3 obfuscations
-def test_c0_blocks_nothing(): ...                          # block rate == 0.0
+def test_each_attack_class_has_a_script(): ...  # A1..A8 present
+def test_c3_blocks_all_scripted_attacks_a1_to_a2(): ...  # block rate == 1.0 for A1, A2 incl. 3 obfuscations
+def test_c0_blocks_nothing(): ...  # block rate == 0.0
 ```
 
 - [ ] **Step 2: Run** `pytest -q tests/test_bench.py`. Expected: FAIL.

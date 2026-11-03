@@ -1,0 +1,5 @@
+{
+  "name": "ml-referee",
+  "version": "0.1.0",
+  "description": "Seal holdout data, audit leakage, and record budgeted model claims."
+}

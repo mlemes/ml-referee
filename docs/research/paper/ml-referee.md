@@ -40,11 +40,11 @@ The adversary is the coding agent itself. It is not assumed to be malicious. It 
 
 `ml-referee` has five parts.
 
-1. **Seal.** `/ml-seal` splits the data. It moves the holdout and the evaluator to a store outside the workspace and records their hashes in a manifest.
-2. **Guard.** A `PreToolUse` hook denies edits to the evaluator and any read or shell command that touches the store. The hook fails closed.
-3. **Ledger.** A `PostToolUse` hook appends each configured train or evaluation command to an append-only, hash-chained log. The log yields the trial count `N`.
-4. **Audit.** `/ml-audit` runs deterministic leakage checks: duplicate rows, entity overlap, target-leaking features, and preprocessing fit on the full data. A reviewer subagent on a different model then reads the diff.
-5. **Claim.** `/ml-claim` verifies the ledger and the manifest, runs the sealed evaluation within a holdout budget (default 1), adjusts the validation claim for `N`, and writes a report.
+1. **Seal.** `/ml-seal` moves the source data into a store outside the workspace and writes the holdout, the evaluator, and a manifest of hashes. It rewrites the workspace train file with the non-holdout rows. There is no validation split.
+2. **Guard.** A `PreToolUse` hook denies edits to `.ml-referee.toml` and any tool call that touches the store. It fails closed. It applies normalized-substring rules and symlink-aware path resolution.
+3. **Ledger.** A `PostToolUse` hook appends each command that matches a configured trial pattern to an append-only, hash-chained log. It matches per shell segment after it strips environment assignments and wrappers such as `nohup`, `env`, `time`, `nice`, and `sh -c`. The log yields the trial count `N`.
+4. **Audit.** `/ml-audit` runs deterministic leakage checks: duplicate rows, entity overlap, target-leaking features, and preprocessing fit before the split. A reviewer subagent on a different model then reads the diff.
+5. **Claim.** `/ml-claim` verifies the store, the ledger, and the manifest, runs the sealed evaluation within a holdout budget (default 1), adjusts the p-value you supply for `N`, reports the selection gap, and writes a report. The runner holds a lock, kills the evaluator process group on timeout, and never includes evaluator output in errors.
 
 Hooks are a policy layer, not a sandbox. An agent with unrestricted shell access can route around them. Section "Limitations" states the residual risk.
 
@@ -61,7 +61,14 @@ Baselines are no plugin, a prompt that forbids cheating, and permission deny rul
 
 ## Limitations
 
-Same-user file permissions do not stop a determined agent. A stronger version needs a separate user, a container, or an evaluator in a separate process with no filesystem path to the holdout. The ledger cannot see trials that run outside the configured command patterns. The cited 2026 studies are arXiv preprints and have not been peer reviewed [1, 2].
+Same-user file permissions do not stop a determined agent. A stronger version needs a separate user, a container, or an evaluator in a separate process with no filesystem path to the holdout.
+
+- The guard accepts known residuals: `find ~ -name 'holdout.parquet' -exec cat`, glob-obfuscated `cd` chains, and inline Python that walks the home directory.
+- The agent can run the `ml-referee` CLI itself, so it gets at most `holdout_budget` sealed looks.
+- If `python3` is missing, a hook crash does not block in Claude Code, so the guard fails open.
+- The ledger cannot see trials that run outside the configured command patterns. Scripted attack A7 reports 0 percent blocked.
+- The ledger detects tail truncation through `head.txt`, which lives in the same store. A same-user agent that can write the store can forge both. Version 2 needs a separate user or a container.
+- The cited 2026 studies are arXiv preprints and have not been peer reviewed [1, 2].
 
 ## References
 

@@ -41,9 +41,9 @@ Coding agents run machine learning experiments and report the result. Recent stu
 
 - The sealed store lives at `${XDG_DATA_HOME:-~/.local/share}/ml-referee/<project-id>/`.
 - The ledger is JSONL. Each record holds the SHA-256 of the previous record.
-- The configuration file is `.ml-referee.toml` in the project root.
+- The configuration file is `.ml-referee.toml` in the project root. Its `[eval]` command is required but informational. The runner always runs the sealed `evaluator.py`.
 - The default holdout budget is 1.
-- The claim adjusts validation p-values with Bonferroni by default and Benjamini-Hochberg on request.
+- The claim adjusts validation p-values with Bonferroni. Benjamini-Hochberg (`bh_adjust`) is library-only, and `claim` does not use it.
 - The reviewer subagent runs on a model different from the one that wrote the code.
 
 ## Left to the builder

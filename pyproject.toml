@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ml-referee"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["pandas", "numpy", "scipy", "pyarrow"]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "mypy", "pandas-stubs"]
+
+[project.scripts]
+ml-referee = "ml_referee.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ml_referee = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+
+[tool.ruff]
+target-version = "py311"
+src = ["src"]
+extend-exclude = ["tests"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = ["CPY001", "D203", "D213"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src"]
+strict = true
+

@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "PreToolUse": [{"matcher": "Read|Write|Edit|Bash|Grep|Glob", "hooks": [{"type": "command", "command": "PYTHONPATH=\"${CLAUDE_PLUGIN_ROOT}/src\" python3 -m ml_referee.hooks.guard"}]}],
+    "PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "PYTHONPATH=\"${CLAUDE_PLUGIN_ROOT}/src\" python3 -m ml_referee.hooks.recorder"}]}],
+    "PostToolUseFailure": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "PYTHONPATH=\"${CLAUDE_PLUGIN_ROOT}/src\" python3 -m ml_referee.hooks.recorder"}]}]
+  }
+}
