@@ -18,7 +18,7 @@ ml-referee = "ml_referee.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-ml_referee = ["py.typed"]
+ml_referee = ["py.typed", "data/opencode/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

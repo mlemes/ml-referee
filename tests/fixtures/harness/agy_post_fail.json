@@ -1,0 +1,15 @@
+{
+ "conversationId": "c",
+ "workspacePaths": [
+  "/p"
+ ],
+ "stepIdx": 3,
+ "toolCall": {
+  "name": "run_command",
+  "args": {
+   "CommandLine": "false",
+   "Cwd": "/p"
+  }
+ },
+ "error": "exit status 1"
+}

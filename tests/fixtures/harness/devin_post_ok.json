@@ -1,0 +1,15 @@
+{
+ "hook_event_name": "PostToolUse",
+ "tool_name": "exec",
+ "tool_input": {
+  "command": "true",
+  "shell_id": "main"
+ },
+ "tool_response": {
+  "success": true,
+  "output": "",
+  "error": null
+ },
+ "session_id": "s",
+ "prompt_id": "p1"
+}

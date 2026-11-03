@@ -198,3 +198,117 @@ def test_main_denies_store_command_from_workspace_subdirectory(
     code, out = run_main(json.dumps(ev), monkeypatch, capsys)
     assert code == 0
     assert_deny(out)
+
+
+def test_main_harness_claude_output_matches_default(
+    env: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ws, store = env
+    payload = json.dumps({
+        "tool_name": "Bash",
+        "tool_input": {"command": f"cat {store}/holdout.parquet"},
+        "cwd": str(ws),
+    })
+    monkeypatch.setattr("sys.stdin", io.StringIO(payload))
+    assert main() == 0
+    default_out = capsys.readouterr().out
+    monkeypatch.setattr("sys.stdin", io.StringIO(payload))
+    assert main(["--harness", "claude"]) == 0
+    assert capsys.readouterr().out == default_out
+    assert_deny(default_out)
+
+
+def test_main_unknown_harness_is_rejected(
+    env: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws, _store = env
+    payload = json.dumps(
+        {"tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": str(ws)}
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(payload))
+    try:
+        code = main(["--harness", "nosuchharness"])
+    except SystemExit as exc:
+        code = int(exc.code) if isinstance(exc.code, int) else 1
+    assert code != 0
+
+
+def test_claude_unknown_tool_non_dict_input_allowed_without_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    payload = json.dumps(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "custom_tool",
+            "tool_input": "not-a-dict",
+            "cwd": str(bare),
+        }
+    )
+    code, out = run_main(payload, monkeypatch, capsys)
+    assert code == 0
+    assert out == ""
+
+
+def test_claude_unknown_tool_nonstandard_key_store_path_denied(
+    env: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ws, store = env
+    payload = json.dumps(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "mcp__x__y",
+            "tool_input": {"weird_key": str(store / "holdout.parquet")},
+            "cwd": str(ws),
+        }
+    )
+    _, out = run_main(payload, monkeypatch, capsys)
+    assert_deny(out)
+
+
+def test_invalid_stdin_with_devin_env_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("DEVIN_PROJECT_DIR", "/tmp")
+    code, _ = run_main("not json", monkeypatch, capsys)
+    assert code == 2
+
+
+def _agy_event(ws: Path, command: str, cwd: str) -> str:
+    return json.dumps(
+        {
+            "conversationId": "c",
+            "workspacePaths": [str(ws)],
+            "toolCall": {"name": "run_command", "args": {"CommandLine": command, "Cwd": cwd}},
+        }
+    )
+
+
+def test_main_agy_cwd_in_store_relative_command_denied(
+    env: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ws, store = env
+    payload = _agy_event(ws, "cat holdout.parquet", str(store))
+    _, out = run_main(payload, monkeypatch, capsys)
+    assert json.loads(out)["decision"] == "deny"
+
+
+def test_main_agy_cwd_tmp_store_command_denied(
+    env: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ws, store = env
+    payload = _agy_event(ws, f"cat {store}/holdout.parquet", "/tmp")
+    _, out = run_main(payload, monkeypatch, capsys)
+    assert json.loads(out)["decision"] == "deny"

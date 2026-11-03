@@ -1,0 +1,14 @@
+{
+ "conversationId": "c",
+ "workspacePaths": [
+  "/p"
+ ],
+ "stepIdx": 3,
+ "toolCall": {
+  "name": "grep_search",
+  "args": {
+   "SearchPath": "/p/src",
+   "Query": "foo"
+  }
+ }
+}

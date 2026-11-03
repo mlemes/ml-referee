@@ -1,0 +1,9 @@
+{
+ "hook_event_name": "PreToolUse",
+ "tool_name": "read",
+ "tool_input": {
+  "filePath": "/p/a.py"
+ },
+ "cwd": "/p",
+ "exit_code": null
+}

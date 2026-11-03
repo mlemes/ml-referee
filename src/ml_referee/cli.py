@@ -18,6 +18,8 @@ from ml_referee.audit import (
 )
 from ml_referee.claim import claim
 from ml_referee.config import Config, find_config, load_config, store_dir
+from ml_referee.harness import HARNESSES
+from ml_referee.install import install
 from ml_referee.ledger import Ledger
 from ml_referee.runner import _verify_store, run_holdout_eval
 from ml_referee.seal import seal
@@ -26,6 +28,10 @@ from ml_referee.seal import seal
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ml-referee")
     commands = parser.add_subparsers(dest="command", required=True)
+    installer = commands.add_parser("install")
+    installer.add_argument("--harness", choices=(*HARNESSES, "all"), required=True)
+    installer.add_argument("--root", type=Path, default=Path.cwd())
+    installer.add_argument("--dry-run", action="store_true")
     for name in ("seal", "eval", "audit", "claim", "verify-ledger"):
         command = commands.add_parser(name)
         command.add_argument("--config", type=Path)
@@ -110,6 +116,12 @@ def main(argv: list[str] | None = None) -> int:
     """Run the ml-referee CLI and return the process exit code."""
     args = _parser().parse_args(argv)
     try:
+        if args.command == "install":
+            targets = HARNESSES if args.harness == "all" else (args.harness,)
+            for name in targets:
+                for change in install(name, args.root, dry_run=args.dry_run):
+                    sys.stdout.write(f"{change.action}: {change.path}\n")
+            return 0
         config = args.config or find_config(Path.cwd())
         if config is None:
             sys.stderr.write("ml-referee: No .ml-referee.toml found\n")

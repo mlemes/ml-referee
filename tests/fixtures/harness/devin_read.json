@@ -1,0 +1,9 @@
+{
+ "hook_event_name": "PreToolUse",
+ "tool_name": "read",
+ "tool_input": {
+  "filePath": "/p/a.py"
+ },
+ "session_id": "s",
+ "prompt_id": "p1"
+}

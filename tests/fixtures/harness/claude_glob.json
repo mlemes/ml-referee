@@ -1,0 +1,9 @@
+{
+ "hook_event_name": "PreToolUse",
+ "tool_name": "Glob",
+ "tool_input": {
+  "pattern": "**/*.py",
+  "path": "/p"
+ },
+ "cwd": "/p"
+}

@@ -1,0 +1,10 @@
+{
+ "hook_event_name": "PreToolUse",
+ "tool_name": "grep",
+ "tool_input": {
+  "pattern": "foo",
+  "path": "/p/src"
+ },
+ "session_id": "s",
+ "prompt_id": "p1"
+}

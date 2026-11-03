@@ -23,6 +23,16 @@ A Claude Code plugin that separates the agent that produces a machine learning r
 
 The hooks run `python3`. If `python3` is missing, a hook crash does not block the tool call in Claude Code, so the guard fails open.
 
+## Supported harnesses
+
+The guard also runs in Codex, Devin for Terminal, Antigravity `agy`, and opencode. Install the hook files for every harness at once, from the project root:
+
+```bash
+ml-referee install --harness all
+```
+
+Pass a single harness name, such as `--harness codex`, to install only that one. The installer writes hook files and an `AGENTS.md` block, and it never overwrites your existing hooks. Codex needs you to trust the hooks in `/hooks`. Only `agy` has been checked live. See `docs/harnesses.md` for the capability matrix, fail modes, and verification status.
+
 ## Run the gate
 
 ```bash

@@ -1,0 +1,9 @@
+{
+ "hook_event_name": "PreToolUse",
+ "tool_name": "bash",
+ "tool_input": {
+  "command": "ls"
+ },
+ "cwd": "/p",
+ "exit_code": null
+}

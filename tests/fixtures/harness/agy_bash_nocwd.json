@@ -1,0 +1,15 @@
+{
+ "conversationId": "c",
+ "workspacePaths": [
+  "/p"
+ ],
+ "transcriptPath": "/t",
+ "modelName": "m",
+ "stepIdx": 3,
+ "toolCall": {
+  "name": "run_command",
+  "args": {
+   "CommandLine": "ls"
+  }
+ }
+}

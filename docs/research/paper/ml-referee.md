@@ -67,6 +67,7 @@ Same-user file permissions do not stop a determined agent. A stronger version ne
 - The agent can run the `ml-referee` CLI itself, so it gets at most `holdout_budget` sealed looks.
 - If `python3` is missing, a hook crash does not block in Claude Code, so the guard fails open.
 - The ledger cannot see trials that run outside the configured command patterns. Scripted attack A7 reports 0 percent blocked.
+- Live checks cover only the agy harness. Codex, Devin, and opencode are supported from their vendor documentation and have not been run live.
 - The ledger detects tail truncation through `head.txt`, which lives in the same store. A same-user agent that can write the store can forge both. Version 2 needs a separate user or a container.
 - The cited 2026 studies are arXiv preprints and have not been peer reviewed [1, 2].
 
