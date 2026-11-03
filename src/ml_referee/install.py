@@ -1,18 +1,19 @@
 """Install ml-referee hooks into agent harness configuration files."""
 
 import json
+import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import ml_referee
 from ml_referee.harness import HARNESSES
 
 OPENCODE_PLUGIN_SRC: Path = (
     Path(__file__).resolve().parents[2] / "integrations" / "opencode" / "ml-referee.js"
 )
 
-_TAG = "# ml-referee"
 _MARKER = "ml_referee.hooks."
 _TIMEOUT = 30
 _POST_MATCHER = {"codex": "^Bash$", "devin": "^exec$", "agy": "run_command"}
@@ -32,7 +33,11 @@ class Change:
 
 
 def _entry(harness: str, module: str, matcher: str, python: str) -> dict[str, Any]:
-    command = f"{python} -m ml_referee.hooks.{module} --harness {harness} {_TAG}"
+    src = shlex.quote(str(Path(ml_referee.__file__).resolve().parent.parent))
+    command = (
+        f"env PYTHONPATH={src} {shlex.quote(python)} "
+        f"-m ml_referee.hooks.{module} --harness {harness}"
+    )
     return {
         "matcher": matcher,
         "hooks": [{"type": "command", "command": command, "timeout": _TIMEOUT}],
