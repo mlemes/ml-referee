@@ -181,10 +181,14 @@ def _generic(tool: str, tin: Mapping[str, object], ctx: _Ctx) -> list[Event]:
     lowered = tool.lower()
     kind = _TOOL_MAP.get(lowered)
     if lowered in _PATCH_TOOLS:
-        texts = {tin[k] for k in _PATCH_KEYS if k in tin}
-        if len(texts) != 1 or not all(isinstance(t, str) for t in texts):
+        values = [tin[k] for k in _PATCH_KEYS if k in tin]
+        patches = [v for v in values if isinstance(v, str)]
+        if len(patches) != len(values):
+            _fail(f"{tool} patch field must be a string")
+        texts = set(patches)
+        if len(texts) != 1:
             _fail(f"{tool} needs exactly one string patch text")
-        return _patch_events(str(next(iter(texts))), ctx)
+        return _patch_events(next(iter(texts)), ctx)
     if kind == "Bash":
         cmd = tin.get("command")
         if not isinstance(cmd, str):
