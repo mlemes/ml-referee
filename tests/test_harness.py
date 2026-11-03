@@ -269,3 +269,105 @@ def test_detect_harness() -> None:
     assert detect_harness(load("devin_exec"), {}) == "devin"
     assert detect_harness(load("claude_bash"), {"DEVIN_PROJECT_DIR": "/p"}) == "devin"
     assert detect_harness(load("claude_bash"), {}) == "claude"
+
+
+def test_apply_patch_without_header_fails_closed() -> None:
+    raw = load("codex_apply_patch")
+    raw["tool_input"]["command"] = "*** Begin Patch\n@@\n-x\n+y\n*** End Patch"
+    with pytest.raises(ValueError):
+        normalize("codex", raw)
+
+
+@pytest.mark.parametrize("name", ["claude_grep", "claude_glob"])
+@pytest.mark.parametrize("pattern", [None, 5, ["a"]])
+def test_search_bad_pattern_raises(name: str, pattern: object) -> None:
+    raw = load(name)
+    if pattern is None:
+        del raw["tool_input"]["pattern"]
+    else:
+        raw["tool_input"]["pattern"] = pattern
+    with pytest.raises(ValueError):
+        normalize("claude", raw)
+
+
+def test_search_non_str_path_raises() -> None:
+    raw = load("claude_grep")
+    raw["tool_input"]["path"] = 7
+    with pytest.raises(ValueError):
+        normalize("claude", raw)
+
+
+@pytest.mark.parametrize(
+    ("name", "key"),
+    [
+        ("claude_write", "content"),
+        ("claude_edit", "new_string"),
+        ("claude_edit", "old_string"),
+        ("claude_read", "path"),
+    ],
+)
+def test_file_tool_non_str_field_raises(name: str, key: str) -> None:
+    raw = load(name)
+    raw["tool_input"][key] = 3
+    with pytest.raises(ValueError):
+        normalize("claude", raw)
+
+
+def _agy_multi(chunks: object) -> dict[str, Any]:
+    raw = load("agy_multi_edit")
+    raw["toolCall"]["args"]["ReplacementChunks"] = chunks
+    return raw
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        [],
+        ["notadict"],
+        [{"ReplacementContent": 1, "TargetContent": "a"}],
+        [{"ReplacementContent": "b", "TargetContent": 2}],
+        [{"ReplacementContent": "b"}],
+    ],
+)
+def test_agy_multi_edit_bad_chunks_raise(chunks: object) -> None:
+    with pytest.raises(ValueError):
+        normalize("agy", _agy_multi(chunks))
+
+
+def test_claude_post_tool_use_failure() -> None:
+    raw = load("claude_bash")
+    raw["hook_event_name"] = "PostToolUseFailure"
+    raw["tool_response"] = {"exit_code": 2}
+    ev = normalize("claude", raw)[0]
+    assert ev["hook_event_name"] == "PostToolUse"
+    assert ev["failed"] is True
+    assert ev["exit_code"] == 2
+
+
+def test_claude_post_tool_use_failure_non_dict_response() -> None:
+    raw = load("claude_bash")
+    raw["hook_event_name"] = "PostToolUseFailure"
+    raw["tool_response"] = "boom"
+    ev = normalize("claude", raw)[0]
+    assert ev["hook_event_name"] == "PostToolUse"
+    assert ev["failed"] is True
+    assert ev["exit_code"] is None
+
+
+@pytest.mark.parametrize(
+    ("harness", "name"),
+    [
+        ("claude", "claude_bash"),
+        ("codex", "codex_bash"),
+        ("opencode", "opencode_bash"),
+    ],
+)
+@pytest.mark.parametrize("bad", ["missing", "", 5])
+def test_bad_cwd_raises(harness: str, name: str, bad: object) -> None:
+    raw = load(name)
+    if bad == "missing":
+        del raw["cwd"]
+    else:
+        raw["cwd"] = bad
+    with pytest.raises(ValueError):
+        normalize(harness, raw)
