@@ -8,7 +8,7 @@ import pytest
 from ml_referee.config import load_config, store_dir
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN = ROOT / "integrations" / "opencode" / "ml-referee.js"
+PLUGIN = ROOT / "src" / "ml_referee" / "data" / "opencode" / "ml-referee.js"
 
 
 def _has_node() -> bool:

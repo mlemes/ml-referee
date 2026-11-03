@@ -62,14 +62,14 @@ def test_hooks_json_registers_guard_and_recorder() -> None:
     for tool in ("Read", "Write", "Edit", "Bash", "Grep", "Glob"):
         assert tool in matcher
     assert (
-        'PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/src" python3 -m ml_referee.hooks.guard'
+        'PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/src" python3 -m ml_referee.hooks.guard --harness claude'
         in _commands(pre[0])
     )
     for event in ("PostToolUse", "PostToolUseFailure"):
         entry = hooks[event][0]
         assert "Bash" in str(entry["matcher"])
         assert any(
-            c.endswith("-m ml_referee.hooks.recorder")
+            c.endswith("-m ml_referee.hooks.recorder --harness claude")
             and "${CLAUDE_PLUGIN_ROOT}/src" in c
             for c in _commands(entry)
         )

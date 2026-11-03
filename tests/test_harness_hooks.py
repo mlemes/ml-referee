@@ -452,3 +452,11 @@ def test_claude_post_with_permission_mode_records_exit_code(proj: Proj) -> None:
     assert len(records) == 1
     assert records[0].payload["exit_code"] == 3
     assert records[0].payload["failed"] is True
+
+
+@pytest.mark.parametrize("command", [[], {"a": 1}])
+def test_guard_codex_apply_patch_non_str_command_denied(proj: Proj, command: object) -> None:
+    work, _store, env = proj
+    proc = _run("guard", "codex", _raw("apply_patch", {"command": command}, work), work, env)
+    assert proc.returncode == 2
+    assert "Traceback" not in proc.stderr

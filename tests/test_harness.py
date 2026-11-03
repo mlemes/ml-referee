@@ -265,7 +265,8 @@ def test_post_ack() -> None:
 def test_detect_harness() -> None:
     assert detect_harness(load("agy_bash"), {}) == "agy"
     assert detect_harness(load("codex_bash"), {}) == "codex"
-    assert detect_harness({"permission_mode": "x"}, {}) == "codex"
+    assert detect_harness({"permission_mode": "x"}, {}) == "claude"
+    assert detect_harness({"permission_mode": "x", "turn_id": "t"}, {}) == "codex"
     assert detect_harness(load("devin_exec"), {}) == "devin"
     assert detect_harness(load("claude_bash"), {"DEVIN_PROJECT_DIR": "/p"}) == "devin"
     assert detect_harness(load("claude_bash"), {}) == "claude"
@@ -479,3 +480,15 @@ def test_extra_or_shadowed_keys_are_not_dropped(tool: str, tin: dict[str, Any]) 
     raw = {"tool_name": tool, "tool_input": tin, "cwd": "/p", "hook_event_name": "PreToolUse"}
     events = normalize("codex", raw)
     assert any("/s/x" in json.dumps(e["tool_input"]) for e in events)
+
+
+@pytest.mark.parametrize("command", [[], {"a": 1}])
+def test_apply_patch_non_str_command_raises(command: object) -> None:
+    raw = {
+        "tool_name": "apply_patch",
+        "tool_input": {"command": command},
+        "cwd": "/p",
+        "hook_event_name": "PreToolUse",
+    }
+    with pytest.raises(ValueError):
+        normalize("codex", raw)

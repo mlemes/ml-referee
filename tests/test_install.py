@@ -14,6 +14,8 @@ from ml_referee.cli import main
 from ml_referee.harness import HARNESSES
 from ml_referee.install import Change, install
 
+_PRISTINE_PLUGIN_SRC = Path(install_mod.OPENCODE_PLUGIN_SRC)
+
 PY = "/opt/py/bin/python"
 JSON_HARNESSES = ("codex", "devin", "agy")
 PATHS = {
@@ -395,10 +397,12 @@ def test_matcher_group_with_user_and_our_hook_keeps_user_hook(tmp_path: Path) ->
 
 
 def test_installer_default_plugin_source_is_packaged_path() -> None:
-    from ml_referee import install as mod  # noqa: PLC0415
-
     assert PACKAGED_JS.is_file()
-    assert Path(mod.OPENCODE_PLUGIN_SRC).resolve() == PACKAGED_JS.resolve()
+    assert _PRISTINE_PLUGIN_SRC.is_file()
+    assert _PRISTINE_PLUGIN_SRC.resolve() == PACKAGED_JS.resolve()
+    assert _PRISTINE_PLUGIN_SRC.parts[-5:] == (
+        "src", "ml_referee", "data", "opencode", "ml-referee.js"
+    )
 
 
 def test_opencode_installs_from_packaged_path_with_constants(
