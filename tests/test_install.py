@@ -1,10 +1,14 @@
 import json
+import os
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+import ml_referee
 from ml_referee import install as install_mod
 from ml_referee.cli import main
 from ml_referee.harness import HARNESSES
@@ -102,7 +106,7 @@ def test_defaults_to_sys_executable(harness: str, tmp_path: Path) -> None:
     events = _events(harness, data)
     for event in ("PreToolUse", "PostToolUse"):
         command = events[event][0]["hooks"][0]["command"]
-        assert command.startswith(sys.executable)
+        assert sys.executable in command
         assert "ml-referee" in command
 
 
@@ -293,3 +297,73 @@ def test_cli_install_all_dry_run(tmp_path: Path) -> None:
     code = main(["install", "--harness", "all", "--root", str(tmp_path), "--dry-run"])
     assert code == 0
     assert _snapshot(tmp_path) == {}
+
+
+PKG_DIR = str(Path(ml_referee.__file__).resolve().parent.parent)
+
+
+def _command(harness: str, root: Path, event: str) -> str:
+    data = json.loads((root / PATHS[harness]).read_text(encoding="utf-8"))
+    return str(_events(harness, data)[event][0]["hooks"][0]["command"])
+
+
+@pytest.mark.parametrize("harness", JSON_HARNESSES)
+def test_default_commands_prefix_pythonpath(harness: str, tmp_path: Path) -> None:
+    install(harness, tmp_path)
+    prefix = f"env PYTHONPATH={shlex.quote(PKG_DIR)} {sys.executable} -m ml_referee.hooks."
+    guard = _command(harness, tmp_path, "PreToolUse")
+    rec = _command(harness, tmp_path, "PostToolUse")
+    assert guard.startswith(prefix + f"guard --harness {harness}")
+    assert rec.startswith(prefix + f"recorder --harness {harness}")
+
+
+@pytest.mark.parametrize("harness", JSON_HARNESSES)
+def test_explicit_python_keeps_interpreter(harness: str, tmp_path: Path) -> None:
+    install(harness, tmp_path, python="/usr/bin/python3")
+    for event in ("PreToolUse", "PostToolUse"):
+        command = _command(harness, tmp_path, event)
+        assert "/usr/bin/python3 -m ml_referee.hooks." in command
+        assert sys.executable not in command
+
+
+@pytest.mark.parametrize("harness", JSON_HARNESSES)
+def test_old_entry_without_prefix_is_replaced(harness: str, tmp_path: Path) -> None:
+    old = f"{sys.executable} -m ml_referee.hooks.guard --harness {harness} # ml-referee"
+    old_entry = {"matcher": "", "hooks": [{"type": "command", "command": old}]}
+    existing: dict[str, Any] = {"PreToolUse": [old_entry]}
+    if harness == "codex":
+        existing = {"hooks": existing}
+    elif harness == "agy":
+        existing = {"ml-referee": existing}
+    target = tmp_path / PATHS[harness]
+    target.parent.mkdir(parents=True)
+    target.write_text(json.dumps(existing), encoding="utf-8")
+    install(harness, tmp_path)
+    events = _events(harness, json.loads(target.read_text(encoding="utf-8")))
+    assert len(events["PreToolUse"]) == 1
+    assert events["PreToolUse"][0]["hooks"][0]["command"].startswith("env PYTHONPATH=")
+    assert install(harness, tmp_path)[0].action == "unchanged"
+
+
+def test_generated_codex_guard_runs_without_inherited_pythonpath(tmp_path: Path) -> None:
+    install("codex", tmp_path)
+    command = _command("codex", tmp_path, "PreToolUse")
+    event = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "python train.py"},
+        "cwd": str(tmp_path),
+    }
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    result = subprocess.run(  # noqa: S602
+        command,
+        shell=True,
+        env={"PATH": os.environ["PATH"]},
+        input=json.dumps(event),
+        text=True,
+        capture_output=True,
+        cwd=elsewhere,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
