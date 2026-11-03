@@ -13,6 +13,8 @@ This document traces data through `ml-referee` v0.1 as implemented. Update it in
 7. `seal.seal` rewrites the workspace train file with the non-holdout rows. There is no validation split. On any failure it restores the source file and removes the store.
 8. You see only the holdout row count.
 
+With `--holdout-file PATH`, `seal.seal` validates the file first (same columns as the source data, at least one row, label present) and raises `SealError` before it creates the store. It then copies the file into the store as `holdout.parquet` in row order, copies the source data into the store as `source.<ext>`, and leaves the workspace train file unchanged. It skips the seeded split.
+
 ## Guard
 
 1. The harness sends a tool call to `hooks.guard` as JSON on standard input (untrusted: the agent chose it). `--harness NAME` selects the adapter, or the guard auto-detects it.
@@ -51,6 +53,7 @@ This document traces data through `ml-referee` v0.1 as implemented. Update it in
 2. `audit.checks` produce findings: duplicates (the label column is ignored), entity overlap, target leakage (Spearman rank correlation for non-binary labels), and fit before split in the files you pass with `--sources`.
 3. `cli.audit` prints one JSON line per finding. It exits 3 when any finding is high severity.
 4. The `ml-reviewer` agent reads the diff and the findings and reports without editing files.
+5. For each `--against PATH` file, `cli.audit` also compares the workspace train file with that file (label dropped, group column from the config), runs the duplicate and entity-overlap checks, and tags each finding with `[against=<basename>]`. A missing or unreadable file exits 1 before `claim` spends any holdout budget.
 
 Audit and claim counts reveal holdout membership to an agent that can run the CLI. This is an accepted residual.
 

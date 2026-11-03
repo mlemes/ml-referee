@@ -345,3 +345,180 @@ def test_claim_out_readonly_file_exits_one_without_budget(
     assert main(["claim", "--predictions", str(preds), "--out", str(ro)]) == 1
     assert ro.read_text() == "old"
     assert _ledger(ws).eval_count() == 0
+
+
+def _holdout_csv(ws: Path) -> Path:
+    path = ws / "hold.csv"
+    pd.DataFrame({"x": [0.1, 0.2, 0.3], "y": [1, 0, 1]}).to_csv(path, index=False)
+    return path
+
+
+def test_seal_holdout_file_option(ws: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    train = ws / "data" / "train.csv"
+    before = train.read_bytes()
+    hold = _holdout_csv(ws)
+    code = main(["seal", "--evaluator", str(ws / "ev_src.py"),
+                 "--holdout-file", str(hold)])
+    cap = capsys.readouterr()
+    assert code == 0
+    assert "3" in cap.out
+    assert train.read_bytes() == before
+    sealed = pd.read_parquet(store_dir(load_config(ws / ".ml-referee.toml")) / "holdout.parquet")
+    assert list(sealed["y"]) == [1, 0, 1]
+    assert _ledger(ws).eval_count() == 0
+
+
+def test_seal_holdout_file_bad_columns_exits_one_no_store(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bad = ws / "bad.csv"
+    pd.DataFrame({"x": [0.1], "z": [1]}).to_csv(bad, index=False)
+    code = main(["seal", "--evaluator", str(ws / "ev_src.py"), "--holdout-file", str(bad)])
+    cap = capsys.readouterr()
+    assert code == 1
+    assert cap.err
+    assert "NotImplementedError" not in cap.err
+    assert not store_dir(load_config(ws / ".ml-referee.toml")).exists()
+
+
+def test_seal_holdout_file_missing_exits_one_no_store(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(["seal", "--evaluator", str(ws / "ev_src.py"),
+                 "--holdout-file", str(ws / "nope.csv")])
+    cap = capsys.readouterr()
+    assert code == 1
+    assert cap.err
+    assert not store_dir(load_config(ws / ".ml-referee.toml")).exists()
+
+
+TOML_GROUP = TOML.replace('label = "y"', 'label = "y"\ngroup = "g"')
+
+
+def _group_ws(ws: Path, capsys: pytest.CaptureFixture[str]) -> pd.DataFrame:
+    (ws / ".ml-referee.toml").write_text(TOML_GROUP)
+    train = ws / "data" / "train.csv"
+    df = pd.read_csv(train)
+    df["g"] = np.arange(len(df))
+    df.to_csv(train, index=False)
+    _seal(ws, capsys)
+    return pd.read_csv(train)
+
+
+def _against_lines(out: str) -> list[dict[str, str]]:
+    return [json.loads(x) for x in out.splitlines() if x.strip()]
+
+
+def test_audit_against_entity_overlap_tagged(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    train = _group_ws(ws, capsys)
+    vis = ws / "visible.csv"
+    pd.DataFrame({"x": [99.5, 98.5], "g": train["g"].iloc[:2].to_numpy()}).to_csv(
+        vis, index=False
+    )
+    code = main(["audit", "--against", str(vis)])
+    lines = _against_lines(capsys.readouterr().out)
+    hits = [x for x in lines if x["check"] == "entity_overlap" and x["severity"] == "high"]
+    assert code == 3
+    assert hits
+    assert all(x["detail"].endswith("[against=visible.csv]") for x in hits)
+
+
+def test_audit_against_exact_duplicates_high(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    train = _group_ws(ws, capsys)
+    vis = ws / "visible.csv"
+    train.iloc[:3].to_csv(vis, index=False)
+    code = main(["audit", "--against", str(vis)])
+    lines = _against_lines(capsys.readouterr().out)
+    hits = [x for x in lines if x["check"] == "duplicates" and "[against=" in x["detail"]]
+    assert code == 3
+    assert hits
+    assert all(x["severity"] == "high" for x in hits)
+
+
+def test_audit_against_clean_gives_no_findings(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _group_ws(ws, capsys)
+    vis = ws / "visible.csv"
+    pd.DataFrame({"x": [90.5, 91.5], "g": [1000, 1001]}).to_csv(vis, index=False)
+    code = main(["audit", "--against", str(vis)])
+    lines = _against_lines(capsys.readouterr().out)
+    assert code == 0
+    assert not [x for x in lines if "[against=" in x["detail"]]
+
+
+def test_audit_against_output_has_no_label_values(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    train = _group_ws(ws, capsys)
+    vis = ws / "visible.csv"
+    vis_df = train.iloc[:3].copy()
+    vis_df["y"] = ["SECRETLABEL_A", "SECRETLABEL_B", "SECRETLABEL_C"]
+    vis_df.to_csv(vis, index=False)
+    main(["audit", "--against", str(vis)])
+    out = capsys.readouterr().out
+    assert "[against=visible.csv]" in out
+    assert "SECRETLABEL" not in out
+
+
+def test_claim_against_embeds_findings(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    train = _group_ws(ws, capsys)
+    vis = ws / "visible.csv"
+    train.iloc[:3].to_csv(vis, index=False)
+    code = main(["claim", "--predictions", str(_preds(ws)), "--against", str(vis)])
+    report = capsys.readouterr().out
+    section = report.split("## Audit findings")[1].split("## Limits")[0]
+    assert code == 0
+    assert "[against=visible.csv]" in section
+    assert "- high: duplicates:" in section
+
+
+def test_claim_against_missing_exits_one_budget_unchanged(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seal(ws, capsys)
+    code = main(
+        ["claim", "--predictions", str(_preds(ws)), "--against", str(ws / "nope.csv")]
+    )
+    cap = capsys.readouterr()
+    assert code == 1
+    assert cap.err
+    assert _ledger(ws).eval_count() == 0
+
+
+def test_audit_against_two_flags_tagged_per_file(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    train = _group_ws(ws, capsys)
+    a, b = ws / "vis_a.csv", ws / "vis_b.csv"
+    train.iloc[:3].to_csv(a, index=False)
+    train.iloc[3:6].to_csv(b, index=False)
+    code = main(["audit", "--against", str(a), "--against", str(b)])
+    lines = _against_lines(capsys.readouterr().out)
+    hits_a = [x for x in lines if x["detail"].endswith("[against=vis_a.csv]")]
+    hits_b = [x for x in lines if x["detail"].endswith("[against=vis_b.csv]")]
+    assert code == 3
+    assert any(x["severity"] == "high" for x in hits_a)
+    assert any(x["severity"] == "high" for x in hits_b)
+
+
+def test_claim_against_two_flags_second_missing_exits_one_budget_unchanged(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    train = _group_ws(ws, capsys)
+    a = ws / "vis_a.csv"
+    train.iloc[:3].to_csv(a, index=False)
+    code = main(
+        ["claim", "--predictions", str(_preds(ws)),
+         "--against", str(a), "--against", str(ws / "nope.csv")]
+    )
+    cap = capsys.readouterr()
+    assert code == 1
+    assert cap.err
+    assert _ledger(ws).eval_count() == 0

@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pandas as pd
@@ -37,10 +37,15 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--config", type=Path)
         if name == "seal":
             command.add_argument("--evaluator", type=Path, required=True)
+            command.add_argument("--holdout-file", type=Path)
         if name in {"eval", "claim"}:
             command.add_argument("--predictions", type=Path, required=True)
         if name == "audit":
             command.add_argument("--sources", nargs="*", type=Path, default=[])
+        if name in {"audit", "claim"}:
+            command.add_argument(
+                "--against", nargs="*", type=Path, action="extend", default=[],
+            )
         if name == "claim":
             command.add_argument("--val-scores", type=Path)
             command.add_argument("--p-value", type=float)
@@ -48,32 +53,46 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _audit(cfg: Config, sources: list[Path]) -> list[Finding]:
+def _read(path: Path) -> pd.DataFrame:
+    return pd.read_csv(path) if path.suffix == ".csv" else pd.read_parquet(path)
+
+
+def _audit(
+    cfg: Config, sources: list[Path], against: list[Path] | None = None,
+) -> list[Finding]:
     """Run audits; counts reveal holdout membership (accepted residual)."""
     _verify_store(cfg, store_dir(cfg))
-    train = (
-        pd.read_csv(cfg.train_path)
-        if cfg.train_path.suffix == ".csv"
-        else pd.read_parquet(cfg.train_path)
-    )
+    train = _read(cfg.train_path)
+    visible = [(path, _read(path)) for path in against or []]
     holdout = pd.read_parquet(store_dir(cfg) / "holdout.parquet")
+    tagged = [
+        replace(finding, detail=f"{finding.detail} [against={path.name}]")
+        for path, frame in visible
+        for finding in (
+            *check_duplicates(train, frame.drop(columns=[cfg.label], errors="ignore")),
+            *check_entity_overlap(
+                train, frame.drop(columns=[cfg.label], errors="ignore"), cfg.group,
+            ),
+        )
+    ]
     return [
         *check_duplicates(train, holdout.drop(columns=[cfg.label], errors="ignore")),
         *check_entity_overlap(train, holdout, cfg.group),
         *check_target_leak(train, cfg.label),
         *check_fit_on_full(sources),
+        *tagged,
     ]
 
 
 def _run(args: argparse.Namespace, cfg: Config) -> int:  # noqa: C901, PLR0912
     if args.command == "seal":
-        manifest = seal(cfg, args.evaluator)
+        manifest = seal(cfg, args.evaluator, args.holdout_file)
         sys.stdout.write(f"Sealed holdout rows: {manifest.n_holdout}\n")
     elif args.command == "eval":
         result = run_holdout_eval(cfg, args.predictions)
         sys.stdout.write(json.dumps(asdict(result)) + "\n")
     elif args.command == "audit":
-        findings = _audit(cfg, args.sources)
+        findings = _audit(cfg, args.sources, args.against)
         for finding in findings:
             sys.stdout.write(json.dumps(asdict(finding)) + "\n")
         return 3 if any(f.severity == "high" for f in findings) else 0
@@ -102,9 +121,8 @@ def _run(args: argparse.Namespace, cfg: Config) -> int:  # noqa: C901, PLR0912
             ):
                 msg = "Validation scores must be a JSON list of numbers"
                 raise ValueError(msg)
-        report = claim(
-            cfg, args.predictions, scores, args.p_value, findings=_audit(cfg, []),
-        )
+        findings = _audit(cfg, [], args.against)
+        report = claim(cfg, args.predictions, scores, args.p_value, findings=findings)
         if args.out is not None:
             args.out.write_text(report, encoding="utf-8")
         else:
