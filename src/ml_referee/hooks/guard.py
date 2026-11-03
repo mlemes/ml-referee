@@ -41,27 +41,38 @@ def _decide_event(event: dict[str, object], policy: Policy) -> Decision:
     return Decision(allow=True, reason="No sealed store access")
 
 
+def _raw_cwd(name: str, raw: dict[str, object]) -> str | None:
+    """Resolve the workspace directory from a raw payload before normalizing."""
+    if name == "agy":
+        default = str(Path.cwd())
+        ws = raw.get("workspacePaths")
+        if isinstance(ws, list) and ws and isinstance(ws[0], str):
+            default = ws[0]
+        call = raw.get("toolCall")
+        args = call.get("args") if isinstance(call, dict) else None
+        cwd_arg = args.get("Cwd") if isinstance(args, dict) else None
+        return cwd_arg if isinstance(cwd_arg, str) and cwd_arg else default
+    if name == "devin":
+        return os.environ.get("DEVIN_PROJECT_DIR") or str(Path.cwd())
+    cwd = raw.get("cwd")
+    return cwd if isinstance(cwd, str) and cwd else None
+
+
 def _evaluate(  # noqa: C901, PLR0911
     harness: str | None,
     raw: object,
 ) -> tuple[str, Decision, bool]:
     """Return ``(harness, decision, is_post)``; allow when no config exists."""
-    name = harness or "claude"
+    name = harness or detect_harness({}, os.environ)
     if isinstance(raw, dict) and harness is None:
         name = detect_harness(raw, os.environ)
-    if not isinstance(raw, dict) or (
-        name == "claude" and not isinstance(raw.get("cwd"), str)
-    ):
-        return name, Decision(allow=False, reason="Malformed hook event"), False
+    malformed = Decision(allow=False, reason="Malformed hook event")
+    if not isinstance(raw, dict):
+        return name, malformed, False
     try:
-        events = normalize(name, raw)
-        if not events:
-            return name, Decision(allow=False, reason="Malformed hook event"), False
-        if all(event.get("hook_event_name") == "PostToolUse" for event in events):
-            return name, Decision(allow=True, reason="post"), True
-        cwd = events[0]["cwd"]
-        if not isinstance(cwd, str):
-            return name, Decision(allow=False, reason="Malformed hook event"), False
+        cwd = _raw_cwd(name, raw)
+        if cwd is None:
+            return name, malformed, False
         workspace = Path(cwd).resolve()
         for directory in (workspace, *workspace.parents):
             config = directory / ".ml-referee.toml"
@@ -69,10 +80,16 @@ def _evaluate(  # noqa: C901, PLR0911
                 config.lstat()
             except FileNotFoundError:
                 continue
+            events = normalize(name, raw)
+            if not events:
+                return name, malformed, False
+            # agy's combined runner sends PostToolUse payloads here; just ack them.
+            if name == "agy" and all(
+                event.get("hook_event_name") == "PostToolUse" for event in events
+            ):
+                return name, Decision(allow=True, reason="post"), True
             policy = build_policy(load_config(config), directory)
-            # Claude Code keeps its original, unnormalized event for identical behavior.
-            candidates = [raw] if name == "claude" else events
-            for event in candidates:
+            for event in events:
                 decision = _decide_event(event, policy)
                 if not decision.allow:
                     return name, decision, False
@@ -91,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         raw = json.load(sys.stdin)
     except (ValueError, OSError, RecursionError) as exc:
-        harness = args.harness or "claude"
+        harness = args.harness or detect_harness({}, os.environ)
         decision = Decision(allow=False, reason=f"Guard cannot validate event: {exc}")
         is_post = False
     else:

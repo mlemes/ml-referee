@@ -84,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         harness = args.harness or detect_harness(raw, os.environ)
         events = normalize(harness, raw)
+        if harness == "claude":
+            events = [raw]  # keep tool_response exit_code/failed handling
         if not events or not isinstance(events[0].get("cwd"), str):
             return 0
         config = find_config(Path(str(events[0]["cwd"])))
