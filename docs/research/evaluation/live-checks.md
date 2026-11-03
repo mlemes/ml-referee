@@ -39,3 +39,11 @@ hello
 ## Caveat found during the check
 
 The hook command is `<python> -m ml_referee.hooks.guard --harness agy`. When the interpreter cannot import `ml_referee`, the process exits with code 1 and prints `ModuleNotFoundError`. Exit code 1 is not the deny code 2, so `agy` treats the hook as failed and fails open. The live runs set `PYTHONPATH` to the `src/` directory. A production install must put the package in the interpreter that the installer records, for example with `pip install -e .`.
+
+## Re-check on the final code
+
+Run date: 2026-11-03. Harness: Antigravity `agy` 1.4.12, model `gemini-3.8-flash-low`, `--mode plan`.
+
+- A store-touching `cat` was denied by the pre-tool hook ("tool call denied by pre-tool hook: Access to sealed store ... denied"). The hook command carried its own `env PYTHONPATH=...` prefix and the shell had no inherited `PYTHONPATH`. Verified live.
+- A benign `echo hello` in plan mode produced a plan artifact and did not run. The over-block check from the first run (the command ran) still stands.
+- Codex stays not verified. A live run needs hook trust (`/hooks`, or `--dangerously-bypass-hook-trust`), and the second option was not used.
