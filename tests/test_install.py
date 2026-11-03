@@ -88,14 +88,16 @@ def test_creates_file_with_documented_shape(harness: str, tmp_path: Path) -> Non
     assert pre_hook["type"] == "command"
     assert pre_hook["timeout"] == 30
     assert f"-m ml_referee.hooks.guard --harness {harness}" in pre_hook["command"]
-    assert pre_hook["command"].startswith(PY)
+    assert pre_hook["command"].startswith("env PYTHONPATH=")
+    assert PY in pre_hook["command"]
     assert "ml-referee" in pre_hook["command"]
     assert post[0]["matcher"] == POST_MATCHER[harness]
     post_hook = post[0]["hooks"][0]
     assert post_hook["type"] == "command"
     assert post_hook["timeout"] == 30
     assert f"-m ml_referee.hooks.recorder --harness {harness}" in post_hook["command"]
-    assert post_hook["command"].startswith(PY)
+    assert post_hook["command"].startswith("env PYTHONPATH=")
+    assert PY in post_hook["command"]
     assert "ml-referee" in post_hook["command"]
 
 
@@ -319,11 +321,10 @@ def test_default_commands_prefix_pythonpath(harness: str, tmp_path: Path) -> Non
 
 @pytest.mark.parametrize("harness", JSON_HARNESSES)
 def test_explicit_python_keeps_interpreter(harness: str, tmp_path: Path) -> None:
-    install(harness, tmp_path, python="/usr/bin/python3")
+    install(harness, tmp_path, python="/opt/custom/bin/python")
     for event in ("PreToolUse", "PostToolUse"):
         command = _command(harness, tmp_path, event)
-        assert "/usr/bin/python3 -m ml_referee.hooks." in command
-        assert sys.executable not in command
+        assert "/opt/custom/bin/python -m ml_referee.hooks." in command
 
 
 @pytest.mark.parametrize("harness", JSON_HARNESSES)
