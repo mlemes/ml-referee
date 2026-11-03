@@ -21,7 +21,7 @@ This document describes the components of `ml-referee` v0.1 as implemented. Upda
 | Evaluator runner | `src/ml_referee/runner.py` | Runs the sealed evaluator within the holdout budget. |
 | Audit | `src/ml_referee/audit/checks.py` | Deterministic leakage checks. |
 | Claim | `src/ml_referee/claim/` | Statistics (`stats.py`) and report (`report.py`). |
-| CLI | `src/ml_referee/cli.py` | `ml-referee seal`, `eval`, `audit`, `claim`, `verify-ledger`, and `install`. |
+| CLI | `src/ml_referee/cli.py` | `ml-referee seal` (optionally `--holdout-file` to seal an existing hidden split), `eval`, `audit` and `claim` (both accept repeatable `--against` files), `verify-ledger`, and `install`. |
 | Commands, skill, agent | `commands/`, `skills/ml-referee/`, `agents/ml-reviewer.md` | Claude Code surface: `/ml-seal`, `/ml-audit`, `/ml-claim`, a workflow skill, and a read-only reviewer. |
 | Attack bench | `bench/` | Eight scripted attacks (`bench/attacks/a1_*.py` to `a8_*.py`), a shared fixture (`bench/env.py`), and `bench/run_attacks.py`. |
 
