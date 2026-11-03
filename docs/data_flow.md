@@ -68,3 +68,13 @@ Audit and claim counts reveal holdout membership to an agent that can run the CL
 1. `bench.run_attacks.main` calls `bench.env.make_env`, which seals a synthetic fixture in a temporary `XDG_DATA_HOME`.
 2. `run_all` runs each attack under C0, C2, and C3. C3 calls `policy.decide` on synthetic events. C2 matches literal protected paths. C0 blocks nothing.
 3. The bench prints a Markdown table of block rates.
+
+## BAITBENCH scripted runs
+
+1. `driver.build_tasks` runs the BAITBENCH generator in a container and writes tasks under `/tmp/baitbench-work/make_datasets/tasks/generated/`.
+2. `driver.run_one` copies the task files except `robust_test.csv` into a temporary workspace (`prepare_workspace`), then starts one container per stage, all sharing `/work`, `/state` (the sealed store through `XDG_DATA_HOME`), and `/out`.
+3. C3 only, stage `setup` (`inside.setup`): writes `.ml-referee.toml`, runs `ml-referee seal --holdout-file` on a staged copy of the hidden file, deletes the staged copy, and writes the `AGENTS.md` block. The hidden file is mounted read-only in this stage and in `finalize`, never in `agent`.
+4. Stage `agent` (`inside.agent`): writes each scripted `solution.py` version, runs `python evaluate.py`, and in C3 pipes a synthetic Claude `PostToolUse` event into `ml_referee.hooks.recorder` after each run.
+5. Stage `finalize` (`inside.finalize`): `score.score_workspace` scores the final solution on `test.csv` and on the hidden file (public and hidden scores, hidden predictions to a temporary file). In C3 it also runs `ml-referee audit --against test.csv` and `ml-referee claim` with the hidden predictions.
+6. The driver reads `inside.json`, adds `gap_present` and `claim_exposes_gap` against the honest hidden baseline, and writes `result.json` atomically. A rerun skips runs whose `result.json` has no error.
+

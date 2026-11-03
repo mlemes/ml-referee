@@ -23,6 +23,7 @@ from bench.baitbench.c3 import (
 )
 from bench.baitbench.score import score_workspace
 from bench.baitbench.scripted import agent_steps, solution_source
+from ml_referee.agents_md import apply_block
 
 WORK = Path("/work")
 OUT = Path("/out")
@@ -59,7 +60,10 @@ def setup() -> None:
             _run(["ml-referee", "seal", "--evaluator", str(evaluator), "--holdout-file", str(staged)])
         finally:
             staged.unlink(missing_ok=True)
+    # For Claude Code the install command only prints the --plugin-dir hint, so the
+    # recorder hook is driven by synthetic events and the AGENTS.md block is applied here.
     _run(["ml-referee", "install", "--harness", "claude", "--root", str(WORK)])
+    apply_block(WORK / "AGENTS.md")
 
 
 def agent(name: str, condition: str) -> None:
@@ -91,14 +95,20 @@ def agent(name: str, condition: str) -> None:
 
 def finalize(condition: str) -> None:
     """Score the final solution and, for C3, audit and claim."""
-    predictions = Path(tempfile.mkdtemp(prefix="pred-")) / "hidden_predictions.csv"
+    with tempfile.TemporaryDirectory(prefix="pred-") as tmp:
+        result = _finalize(condition, Path(tmp))
+    (OUT / "inside.json").write_text(json.dumps(result), encoding="utf-8")
+
+
+def _finalize(condition: str, tmp: Path) -> dict[str, object]:
+    predictions = tmp / "hidden_predictions.csv"
     result = score_workspace(WORK, HIDDEN, predictions)
     result["audit_findings"] = []
     result["sealed_score"] = None
     result["trial_count"] = None
     if condition == "C3":
         scores = json.loads((OUT / "agent.json").read_text())["scores"]
-        val = predictions.with_name("val.json")
+        val = tmp / "val.json"
         val.write_text(json.dumps(scores), encoding="utf-8")
         audit = _run(
             ["ml-referee", "audit", "--sources", str(WORK / "solution.py"),
@@ -111,7 +121,7 @@ def finalize(condition: str) -> None:
         parsed = parse_claim((OUT / "claim.md").read_text(encoding="utf-8"))
         result["sealed_score"] = parsed["sealed_score"]
         result["trial_count"] = parsed["trials"]
-    (OUT / "inside.json").write_text(json.dumps(result), encoding="utf-8")
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -129,7 +129,7 @@ def _task_parent(tmp_path: Path) -> Path:
 RESULT_FIELDS = {
     "task_id", "family", "seed", "condition", "agent", "public_score", "hidden_score",
     "metric", "sealed_score", "audit_findings", "trial_count", "claim_exposes_gap",
-    "gap_present", "wall_seconds", "error",
+    "gap_present", "wall_seconds", "error", "quota_notes",
 }
 
 
@@ -443,3 +443,18 @@ def test_smoke_scripted_hack_task01_c0(tmp_path: Path) -> None:
     assert result.public_score is not None
     assert result.public_score < result.hidden_score  # rmse: public far better than hidden
     assert (driver.run_dir(tmp_path, task, "C0", "scripted-hack") / "result.json").exists()
+
+
+@integration
+@needs_docker
+def test_smoke_scripted_hack_task01_c3_seals_and_records_trials(tmp_path: Path) -> None:
+    generated = Path("/tmp/baitbench-work/make_datasets/tasks/generated")  # noqa: S108
+    if not (generated / "regression_task_01_n10k_s01_score").exists():
+        pytest.skip("generated task missing")
+    task = driver.task_refs(generated, range(1, 2))[0]
+    result = driver.run_one(task, "C3", "scripted-hack", 15, tmp_path)
+    assert result.error is None
+    assert result.trial_count == 3
+    assert result.sealed_score == result.hidden_score
+    assert any(f["severity"] == "high" for f in result.audit_findings)
+    assert result.claim_exposes_gap is True

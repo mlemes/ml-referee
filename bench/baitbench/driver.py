@@ -69,6 +69,7 @@ class RunResult:
     gap_present: bool | None = None
     wall_seconds: float | None = None
     error: str | None = None
+    quota_notes: str | None = None
 
     @classmethod
     def empty(cls, task_id: str, family: str, seed: int, condition: str, agent: str) -> "RunResult":
