@@ -198,3 +198,38 @@ def test_main_denies_store_command_from_workspace_subdirectory(
     code, out = run_main(json.dumps(ev), monkeypatch, capsys)
     assert code == 0
     assert_deny(out)
+
+
+def test_main_harness_claude_output_matches_default(
+    env: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ws, store = env
+    payload = json.dumps({
+        "tool_name": "Bash",
+        "tool_input": {"command": f"cat {store}/holdout.parquet"},
+        "cwd": str(ws),
+    })
+    monkeypatch.setattr("sys.stdin", io.StringIO(payload))
+    assert main() == 0
+    default_out = capsys.readouterr().out
+    monkeypatch.setattr("sys.stdin", io.StringIO(payload))
+    assert main(["--harness", "claude"]) == 0
+    assert capsys.readouterr().out == default_out
+    assert_deny(default_out)
+
+
+def test_main_unknown_harness_is_rejected(
+    env: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws, _store = env
+    payload = json.dumps(
+        {"tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": str(ws)}
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(payload))
+    try:
+        code = main(["--harness", "nosuchharness"])
+    except SystemExit as exc:
+        code = int(exc.code) if isinstance(exc.code, int) else 1
+    assert code != 0
