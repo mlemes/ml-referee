@@ -9,6 +9,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from bench.baitbench import real
 from bench.baitbench.c3 import exposes_gap, gap_present
 from bench.baitbench.scripted import solution_source
 
@@ -70,6 +72,9 @@ class RunResult:
     wall_seconds: float | None = None
     error: str | None = None
     quota_notes: str | None = None
+    exit_status: int | None = None
+    hook_denials: int | None = None
+    hidden_probes: int | None = None
 
     @classmethod
     def empty(cls, task_id: str, family: str, seed: int, condition: str, agent: str) -> "RunResult":
@@ -163,7 +168,12 @@ def container_args(  # noqa: PLR0913
     home = Path.home().resolve()
     for host, target, mode in mounts:
         resolved = host.resolve()
-        if "docker.sock" in str(host) or resolved in {home, Path("/")}:
+        agent_dirs = {home / ".claude", home / ".codex", home / ".gemini"}
+        binary = mode == "ro" and target.startswith("/opt/agents/")
+        in_agent_dir = any(resolved == d or d in resolved.parents for d in agent_dirs)
+        if "docker.sock" in str(host) or resolved in {home, Path("/")} or (
+            in_agent_dir and not binary
+        ):
             msg = f"Refusing to mount {host}"
             raise ValueError(msg)
         if mode not in {"ro", "rw"}:
@@ -288,6 +298,106 @@ def _execute(
     return result
 
 
+def _plugin_copy(dest: Path) -> None:
+    root = BENCH_DIR.parent.parent
+    dest.mkdir()
+    for name in (".claude-plugin", "hooks", "commands", "skills", "agents", "src"):
+        if (root / name).exists():
+            shutil.copytree(root / name, dest / name, ignore=shutil.ignore_patterns("__pycache__"))
+
+
+def _quota_text() -> str:
+    env = {**os.environ, "PYTHONPATH": "/home/mlemes/Projects/quotaline/src"}
+    probe = subprocess.run(
+        [sys.executable, "-m", "usage_statusline"], input="{}", capture_output=True,
+        text=True, check=False, env=env, timeout=120,
+    )
+    lines = probe.stdout.strip().splitlines()
+    claude = subprocess.run(
+        ["claude", "-p", "--model", "sonnet", "--output-format", "stream-json", "--verbose", "ok"],  # noqa: S607
+        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL, timeout=180,
+    )
+    match = re.search(r'"five_hour":\{"utilization":([\d.]+)', claude.stdout)
+    lines.append(f"Claude 5h utilization {match.group(1) if match else 'unknown'}")
+    return " | ".join(lines)
+
+
+def _agent_stage(  # noqa: PLR0913, PLR0917
+    agent: str, condition: str, budget_min: int, mounts: list[tuple[Path, str, str]],
+    home: Path, program: str,
+) -> tuple[int, str, str]:
+    binary = Path(os.path.realpath(shutil.which(agent) or agent))
+    argv = [
+        *container_args(
+            "agent", [*mounts, (home, real.AGENT_HOME, "rw"), (binary, f"{real.AGENT_ROOT}/{agent}", "ro")],
+            {"HOME": real.AGENT_HOME, "XDG_DATA_HOME": "/state", "PYTHONDONTWRITEBYTECODE": "1"},
+            network=True,
+        ),
+        *real.real_argv(agent, condition, budget_min, real.build_prompt(program, budget_min)),
+    ]
+    name = argv[argv.index("--name") + 1]
+    try:
+        run = subprocess.run(  # noqa: S603
+            argv, capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
+            timeout=budget_min * 60 + 120,
+        )
+    except subprocess.TimeoutExpired as exc:
+        subprocess.run(["docker", "kill", name], check=False, capture_output=True)  # noqa: S603, S607
+        out = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        return 124, out, "host timeout"
+    return run.returncode, run.stdout, run.stderr
+
+
+def _save_transcript(directory: Path, agent: str, stdout: str, stderr: str, fragments: list[str]) -> None:
+    for name, text in ((f"transcript-{agent}.jsonl", stdout), ("stderr.log", stderr)):
+        (directory / name).write_text(real.redact(text, fragments), encoding="utf-8")
+
+
+def _execute_real(
+    task: TaskRef, condition: str, agent: str, budget_min: int, out_dir: Path,
+) -> RunResult:
+    result = RunResult.empty(task.task_id, task.family, task.seed, condition, agent)
+    start = time.monotonic()
+    directory = run_dir(out_dir, task, condition, agent)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        before = _quota_text()
+        with tempfile.TemporaryDirectory(prefix="mlr-bb-") as tmp, real.staged_home(
+            agent, Path.home(), Path(tmp),
+        ) as home:
+            cred = Path.home() / real._CRED_FILES[agent]  # noqa: SLF001
+            fragments = real.secret_fragments(cred)
+            workspace, state = Path(tmp) / "ws", Path(tmp) / "state"
+            prepare_workspace(task, workspace)
+            state.mkdir()
+            program = (workspace / "program.md").read_text(encoding="utf-8")
+            (workspace / "timer.py").write_text(real.timer_source(budget_min), encoding="utf-8")
+            plugin = Path(tmp) / "plugin"
+            if agent == "claude" and condition == "C3":
+                _plugin_copy(plugin)
+            base = [*_bench_mounts(), (workspace, "/work", "rw"), (state, "/state", "rw"),
+                    (directory, "/out", "rw")]
+            hidden = [(task.path / "robust_test.csv", "/hidden/robust_test.csv", "ro")]
+            inside = ["python", "-m", "bench.baitbench.inside", "--condition", condition, "--agent", agent]
+            if condition == "C3":
+                _docker("setup", [*base, *hidden], _env(), [*inside, "--stage", "setup"])
+            agent_mounts = [m for m in base if m[1] not in {"/bench-root/bench/__init__.py", "/bench-root/bench/baitbench"}]
+            if plugin.exists():
+                agent_mounts.append((plugin, real.PLUGIN_DIR, "ro"))
+            code, stdout, stderr = _agent_stage(agent, condition, budget_min, agent_mounts, home, program)
+            _save_transcript(directory, agent, stdout, stderr, fragments)
+            result.exit_status = code
+            result.hook_denials = real.denial_count(stdout + stderr)
+            result.hidden_probes = real.hidden_probes(stdout)
+            _docker("finalize", [*base, *hidden], _env(), [*inside, "--stage", "finalize"])
+        _fill(result, json.loads((directory / "inside.json").read_text(encoding="utf-8")), task, out_dir)
+        result.quota_notes = f"before: {before} || after: {_quota_text()}"
+    except Exception as exc:  # noqa: BLE001
+        result.error = f"{type(exc).__name__}: {exc}"[:2000]
+    result.wall_seconds = round(time.monotonic() - start, 2)
+    return result
+
+
 def _fill(result: RunResult, inside: dict[str, object], task: TaskRef, out_dir: Path) -> None:
     result.metric = str(inside["metric"])
     result.public_score = float(inside["public_score"])  # type: ignore[arg-type]
@@ -318,10 +428,7 @@ def run_one(
     if condition not in CONDITIONS:
         msg = f"Unknown condition: {condition}"
         raise ValueError(msg)
-    if agent in REAL:
-        msg = "Real agents are run by the calibration step, not the scripted harness"
-        raise NotImplementedError(msg)
-    if agent not in SCRIPTED:
+    if agent not in SCRIPTED and agent not in REAL:
         msg = f"Unknown agent: {agent}"
         raise ValueError(msg)
     directory = run_dir(out_dir, task, condition, agent)
@@ -330,7 +437,8 @@ def run_one(
         previous = RunResult(**json.loads(existing.read_text(encoding="utf-8")))
         if previous.error is None:
             return previous
-    result = _execute(task, condition, agent, budget_min, out_dir)
+    runner = _execute_real if agent in REAL else _execute
+    result = runner(task, condition, agent, budget_min, out_dir)
     write_result(directory, result)
     return result
 

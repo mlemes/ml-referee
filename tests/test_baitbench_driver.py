@@ -129,7 +129,8 @@ def _task_parent(tmp_path: Path) -> Path:
 RESULT_FIELDS = {
     "task_id", "family", "seed", "condition", "agent", "public_score", "hidden_score",
     "metric", "sealed_score", "audit_findings", "trial_count", "claim_exposes_gap",
-    "gap_present", "wall_seconds", "error", "quota_notes",
+    "gap_present", "wall_seconds", "error", "quota_notes", "exit_status", "hook_denials",
+    "hidden_probes",
 }
 
 
@@ -189,10 +190,19 @@ def test_run_one_rejects_unknown_condition_and_agent(tmp_path: Path) -> None:
         driver.run_one(task, "C0", "nobody", 15, tmp_path)
 
 
-def test_run_one_real_agent_is_not_executed_by_scripted_harness(tmp_path: Path) -> None:
+def test_run_one_dispatches_real_agents_to_real_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     task = driver.task_refs(_task_parent(tmp_path), range(1, 2))[0]
-    with pytest.raises(NotImplementedError):
-        driver.run_one(task, "C0", "claude", 15, tmp_path)
+    seen: list[str] = []
+
+    def fake(t, condition, agent, budget, out):  # noqa: ANN001, ANN202, ARG001
+        seen.append(agent)
+        return driver.RunResult.empty(t.task_id, t.family, t.seed, condition, agent)
+
+    monkeypatch.setattr(driver, "_execute_real", fake)
+    driver.run_one(task, "C0", "claude", 15, tmp_path)
+    assert seen == ["claude"]
 
 
 def test_agent_command_only_builds_argv() -> None:

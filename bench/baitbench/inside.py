@@ -21,6 +21,7 @@ from bench.baitbench.c3 import (
     parse_claim,
     trial_event,
 )
+from bench.baitbench.real import val_scores
 from bench.baitbench.score import score_workspace
 from bench.baitbench.scripted import agent_steps, solution_source
 from ml_referee.agents_md import apply_block
@@ -42,7 +43,7 @@ def _run(argv: list[str], *, ok: tuple[int, ...] = (0,), stdin: str | None = Non
     return run.stdout
 
 
-def setup() -> None:
+def setup(agent_name: str = "") -> None:
     """Write the config, seal the hidden split, and install the hooks (C3 only)."""
     task = json.loads((WORK / "task.json").read_text(encoding="utf-8"))
     with (WORK / "train.csv").open(encoding="utf-8") as stream:
@@ -64,6 +65,8 @@ def setup() -> None:
     # recorder hook is driven by synthetic events and the AGENTS.md block is applied here.
     _run(["ml-referee", "install", "--harness", "claude", "--root", str(WORK)])
     apply_block(WORK / "AGENTS.md")
+    if agent_name in {"codex", "agy"}:
+        _run(["ml-referee", "install", "--harness", agent_name, "--root", str(WORK)])
 
 
 def agent(name: str, condition: str) -> None:
@@ -93,8 +96,15 @@ def agent(name: str, condition: str) -> None:
     (OUT / "agent.json").write_text(json.dumps({"scores": scores}), encoding="utf-8")
 
 
-def finalize(condition: str) -> None:
+def finalize(condition: str, agent_name: str = "") -> None:
     """Score the final solution and, for C3, audit and claim."""
+    solution = WORK / "solution.py"
+    if solution.is_file():
+        shutil.copyfile(solution, OUT / "solution.py")
+    if agent_name in {"claude", "codex", "agy"}:
+        (OUT / "agent.json").write_text(
+            json.dumps({"scores": val_scores(WORK)}), encoding="utf-8",
+        )
     with tempfile.TemporaryDirectory(prefix="pred-") as tmp:
         result = _finalize(condition, Path(tmp))
     (OUT / "inside.json").write_text(json.dumps(result), encoding="utf-8")
@@ -132,11 +142,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--agent", default="")
     args = parser.parse_args(argv)
     if args.stage == "setup":
-        setup()
+        setup(args.agent)
     elif args.stage == "agent":
         agent(args.agent, args.condition)
     else:
-        finalize(args.condition)
+        finalize(args.condition, args.agent)
     return 0
 
 
