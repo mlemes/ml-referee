@@ -1,0 +1,15 @@
+{
+ "session_id": "s",
+ "transcript_path": "/t",
+ "cwd": "/p",
+ "hook_event_name": "PostToolUse",
+ "model": "m",
+ "turn_id": "t1",
+ "tool_name": "Bash",
+ "tool_use_id": "u",
+ "tool_input": {
+  "command": "pytest -q"
+ },
+ "tool_response": "ok",
+ "permission_mode": "default"
+}

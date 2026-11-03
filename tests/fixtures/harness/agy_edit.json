@@ -1,0 +1,15 @@
+{
+ "conversationId": "c",
+ "workspacePaths": [
+  "/p"
+ ],
+ "stepIdx": 3,
+ "toolCall": {
+  "name": "replace_file_content",
+  "args": {
+   "TargetFile": "/p/c.py",
+   "TargetContent": "x",
+   "ReplacementContent": "y"
+  }
+ }
+}

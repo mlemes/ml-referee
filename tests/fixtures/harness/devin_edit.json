@@ -1,0 +1,11 @@
+{
+ "hook_event_name": "PreToolUse",
+ "tool_name": "edit",
+ "tool_input": {
+  "path": "/p/c.py",
+  "new_string": "y",
+  "old_string": "x"
+ },
+ "session_id": "s",
+ "prompt_id": "p1"
+}

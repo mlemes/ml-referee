@@ -1,0 +1,14 @@
+{
+ "session_id": "s",
+ "transcript_path": "/t",
+ "cwd": "/p",
+ "hook_event_name": "PreToolUse",
+ "model": "m",
+ "turn_id": "t1",
+ "tool_name": "apply_patch",
+ "tool_use_id": "u",
+ "tool_input": {
+  "command": "*** Begin Patch\n*** Update File: a.py\n@@\n-x\n+y\n*** Add File: b.py\n+z\n*** End Patch"
+ },
+ "permission_mode": "default"
+}

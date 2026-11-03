@@ -1,0 +1,11 @@
+{
+ "hook_event_name": "PreToolUse",
+ "tool_name": "edit",
+ "tool_input": {
+  "filePath": "/p/c.py",
+  "oldString": "x",
+  "newString": "y"
+ },
+ "cwd": "/p",
+ "exit_code": null
+}

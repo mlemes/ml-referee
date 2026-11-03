@@ -1,0 +1,23 @@
+{
+ "conversationId": "c",
+ "workspacePaths": [
+  "/p"
+ ],
+ "stepIdx": 3,
+ "toolCall": {
+  "name": "multi_replace_file_content",
+  "args": {
+   "TargetFile": "/p/c.py",
+   "ReplacementChunks": [
+    {
+     "TargetContent": "a",
+     "ReplacementContent": "b"
+    },
+    {
+     "TargetContent": "c",
+     "ReplacementContent": "d"
+    }
+   ]
+  }
+ }
+}

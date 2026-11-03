@@ -1,0 +1,15 @@
+{
+ "session_id": "s",
+ "transcript_path": "/t",
+ "cwd": "/p",
+ "hook_event_name": "PreToolUse",
+ "model": "m",
+ "turn_id": "t1",
+ "tool_name": "mcp__srv__tool",
+ "tool_use_id": "u",
+ "tool_input": {
+  "query": "hello",
+  "n": 3
+ },
+ "permission_mode": "default"
+}

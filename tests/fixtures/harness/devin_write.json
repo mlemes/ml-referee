@@ -1,0 +1,10 @@
+{
+ "hook_event_name": "PreToolUse",
+ "tool_name": "write",
+ "tool_input": {
+  "file_path": "/p/b.py",
+  "content": "x"
+ },
+ "session_id": "s",
+ "prompt_id": "p1"
+}

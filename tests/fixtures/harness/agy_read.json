@@ -1,0 +1,13 @@
+{
+ "conversationId": "c",
+ "workspacePaths": [
+  "/p"
+ ],
+ "stepIdx": 3,
+ "toolCall": {
+  "name": "view_file",
+  "args": {
+   "AbsolutePath": "/p/a.py"
+  }
+ }
+}
