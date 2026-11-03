@@ -387,7 +387,8 @@ def _agy(name: str, args: dict[str, Any], **extra: Any) -> dict[str, Any]:
 
 def test_agy_cwd_arg_outside_workspace_does_not_replace_config_root() -> None:
     ev = normalize("agy", _agy("run_command", {"CommandLine": "ls", "Cwd": "/tmp"}))[0]
-    assert ev["cwd"] == "/p"
+    assert ev["cwd"] == "/tmp"
+    assert ev["config_root"] == "/p"
 
 
 def test_agy_relative_cwd_resolves_against_workspace() -> None:

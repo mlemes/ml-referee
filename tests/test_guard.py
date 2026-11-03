@@ -280,3 +280,35 @@ def test_invalid_stdin_with_devin_env_fails_closed(
     monkeypatch.setenv("DEVIN_PROJECT_DIR", "/tmp")
     code, _ = run_main("not json", monkeypatch, capsys)
     assert code == 2
+
+
+def _agy_event(ws: Path, command: str, cwd: str) -> str:
+    return json.dumps(
+        {
+            "conversationId": "c",
+            "workspacePaths": [str(ws)],
+            "toolCall": {"name": "run_command", "args": {"CommandLine": command, "Cwd": cwd}},
+        }
+    )
+
+
+def test_main_agy_cwd_in_store_relative_command_denied(
+    env: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ws, store = env
+    payload = _agy_event(ws, "cat holdout.parquet", str(store))
+    _, out = run_main(payload, monkeypatch, capsys)
+    assert json.loads(out)["decision"] == "deny"
+
+
+def test_main_agy_cwd_tmp_store_command_denied(
+    env: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ws, store = env
+    payload = _agy_event(ws, f"cat {store}/holdout.parquet", "/tmp")
+    _, out = run_main(payload, monkeypatch, capsys)
+    assert json.loads(out)["decision"] == "deny"
