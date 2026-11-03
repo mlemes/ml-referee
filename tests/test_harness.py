@@ -371,3 +371,110 @@ def test_bad_cwd_raises(harness: str, name: str, bad: object) -> None:
         raw["cwd"] = bad
     with pytest.raises(ValueError):
         normalize(harness, raw)
+
+
+# --- agy cwd, patch headers, aliases, detection (multi-harness hardening) ---
+
+
+def _agy(name: str, args: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    raw: dict[str, Any] = {
+        "workspacePaths": ["/p"],
+        "toolCall": {"name": name, "args": args},
+    }
+    raw.update(extra)
+    return raw
+
+
+def test_agy_cwd_arg_outside_workspace_does_not_replace_config_root() -> None:
+    ev = normalize("agy", _agy("run_command", {"CommandLine": "ls", "Cwd": "/tmp"}))[0]
+    assert ev["cwd"] == "/p"
+
+
+def test_agy_relative_cwd_resolves_against_workspace() -> None:
+    ev = normalize("agy", _agy("run_command", {"CommandLine": "ls", "Cwd": "sub/x"}))[0]
+    assert ev["cwd"] == "/p/sub/x"
+
+
+def test_detect_harness_permission_mode_without_turn_id_is_claude() -> None:
+    raw = {"permission_mode": "default", "tool_name": "Bash", "tool_input": {}}
+    assert detect_harness(raw, {}) == "claude"
+    assert detect_harness({**raw, "turn_id": "t1"}, {}) == "codex"
+
+
+@pytest.mark.parametrize("error", [None, 0, False, ["x"]])
+def test_agy_error_non_str_is_not_post(error: object) -> None:
+    ev = normalize("agy", _agy("run_command", {"CommandLine": "ls"}, error=error))[0]
+    assert ev["hook_event_name"] == "PreToolUse"
+
+
+@pytest.mark.parametrize(("error", "failed"), [("", False), ("boom", True)])
+def test_agy_error_str_is_post(error: str, failed: bool) -> None:
+    ev = normalize("agy", _agy("run_command", {"CommandLine": "ls"}, error=error))[0]
+    assert ev["hook_event_name"] == "PostToolUse"
+    assert ev["failed"] is failed
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        "*** Begin Patch\n***Update File:.ml-referee.toml\n@@\n-a\n+b\n*** End Patch\n",
+        "*** Begin Patch\n  *** Update File:   .ml-referee.toml\n@@\n-a\n+b\n*** End Patch\n",
+        "*** Begin Patch\r\n*** Update File: .ml-referee.toml\r\n@@\r\n-a\r\n+b\r\n"
+        "*** End Patch\r\n",
+        "*** Begin Patch\r\n  ***Add File:   .ml-referee.toml  \r\n+x\r\n*** End Patch\r\n",
+    ],
+)
+def test_apply_patch_header_variants_extract_path(patch: str) -> None:
+    raw = {
+        "tool_name": "apply_patch",
+        "tool_input": {"command": patch},
+        "cwd": "/p",
+        "hook_event_name": "PreToolUse",
+    }
+    events = normalize("codex", raw)
+    assert [e["tool_input"]["file_path"] for e in events] == [".ml-referee.toml"]
+
+
+def test_apply_patch_multi_file_yields_one_event_per_file() -> None:
+    patch = (
+        "*** Begin Patch\n*** Update File: a.py\n@@\n-a\n+b\n"
+        "*** Add File: b.py\n+x\n*** Delete File: c.py\n*** End Patch\n"
+    )
+    raw = {
+        "tool_name": "apply_patch",
+        "tool_input": {"command": patch},
+        "cwd": "/p",
+        "hook_event_name": "PreToolUse",
+    }
+    events = normalize("codex", raw)
+    assert [e["tool_input"]["file_path"] for e in events] == ["a.py", "b.py", "c.py"]
+
+
+def test_other_tool_collects_all_strings() -> None:
+    raw = {
+        "tool_name": "mcp__fs__write",
+        "tool_input": {"path": ".ml-referee.toml", "text": "x"},
+        "cwd": "/p",
+        "hook_event_name": "PreToolUse",
+    }
+    ev = normalize("codex", raw)[0]
+    assert ev["tool_name"] == "Other"
+    assert set(ev["tool_input"]["strings"]) == {".ml-referee.toml", "x"}
+
+
+@pytest.mark.parametrize(
+    ("tool", "tin"),
+    [
+        ("edit", {"file_path": "a.py", "filePath": "/s/x", "new_string": "n"}),
+        ("edit", {"file_path": "a.py", "new_string": "", "newString": "/s/x"}),
+        ("read", {"file_path": "a.py", "target": "/s/x"}),
+        ("grep", {"pattern": "x", "glob": "/s/x"}),
+        ("glob", {"pattern": "*.py", "include": "/s/x"}),
+        ("multiedit", {"file_path": "a.py", "edits": [{"new_string": "/s/x"}]}),
+    ],
+)
+def test_extra_or_shadowed_keys_are_not_dropped(tool: str, tin: dict[str, Any]) -> None:
+    """Every string in the input must survive normalization for the guard to scan."""
+    raw = {"tool_name": tool, "tool_input": tin, "cwd": "/p", "hook_event_name": "PreToolUse"}
+    events = normalize("codex", raw)
+    assert any("/s/x" in json.dumps(e["tool_input"]) for e in events)

@@ -250,3 +250,205 @@ def test_recorder_opencode_exit_code_recorded(
     assert len(records) == 1
     assert records[0].payload["exit_code"] == 0
     assert records[0].payload["failed"] is False
+
+
+# --- multi-harness hardening: deny paths ---
+
+from ml_referee.hooks.guard import _decide_event  # noqa: E402
+from ml_referee.policy import build_policy  # noqa: E402
+
+Proj = tuple[Path, Path, dict[str, str]]
+
+
+def _raw(tool: str, tin: dict[str, object], work: Path, **extra: object) -> str:
+    base: dict[str, object] = {
+        "tool_name": tool,
+        "tool_input": tin,
+        "cwd": str(work),
+        "hook_event_name": "PreToolUse",
+    }
+    base.update(extra)
+    return json.dumps(base)
+
+
+def _denied(proc: subprocess.CompletedProcess[str], harness: str) -> bool:
+    if harness == "agy":
+        return json.loads(proc.stdout).get("decision") == "deny"
+    if harness == "claude":
+        return "deny" in proc.stdout
+    return proc.returncode == 2
+
+
+def _agy_payload(work: Path, args: dict[str, object], **extra: object) -> str:
+    body: dict[str, object] = {
+        "conversationId": "c",
+        "workspacePaths": [str(work)],
+        "toolCall": {"name": "run_command", "args": args},
+    }
+    body.update(extra)
+    return json.dumps(body)
+
+
+def test_agy_outside_cwd_arg_still_denied(proj: Proj) -> None:
+    work, store, env = proj
+    stdin = _agy_payload(work, {"CommandLine": f"cat {store}/holdout.parquet", "Cwd": "/tmp"})
+    proc = _run("guard", "agy", stdin, work, env)
+    assert json.loads(proc.stdout)["decision"] == "deny"
+
+
+def test_agy_relative_cwd_still_denied(proj: Proj) -> None:
+    work, store, env = proj
+    (work / "sub").mkdir()
+    stdin = _agy_payload(work, {"CommandLine": f"cat {store}/holdout.parquet", "Cwd": "sub"})
+    proc = _run("guard", "agy", stdin, work, env)
+    assert json.loads(proc.stdout)["decision"] == "deny"
+
+
+@pytest.mark.parametrize("error", ["", None, "boom"])
+def test_agy_error_key_never_skips_policy(proj: Proj, error: object) -> None:
+    work, store, env = proj
+    stdin = _agy_payload(work, {"CommandLine": f"cat {store}/holdout.parquet"}, error=error)
+    proc = _run("guard", "agy", stdin, work, env)
+    assert json.loads(proc.stdout)["decision"] == "deny"
+
+
+def test_agy_post_with_none_error_runs_policy_and_allows_benign(proj: Proj) -> None:
+    work, _store, env = proj
+    proc = _run("guard", "agy", _agy_payload(work, {"CommandLine": "true"}, error=None), work, env)
+    assert proc.returncode == 0
+    assert json.loads(proc.stdout) in ({}, {"decision": "allow"})
+
+
+@pytest.mark.parametrize(
+    ("tool", "tin"),
+    [
+        ("mcp__fs__write", {"path": ".ml-referee.toml", "text": "x"}),
+        ("mcp__fs__read", {"path": "@STORE@/holdout.parquet"}),
+        ("mcp__x__do", {"nested": {"deep": [".ml-referee.toml"]}}),
+        (
+            "patch",
+            {"patchText": "*** Begin Patch\n*** Update File: .ml-referee.toml\n@@\n-a\n+b\n"
+             "*** End Patch\n"},
+        ),
+    ],
+)
+@pytest.mark.parametrize("harness", ["codex", "opencode"])
+def test_other_tools_naming_config_or_store_denied(
+    proj: Proj, harness: str, tool: str, tin: dict[str, object]
+) -> None:
+    work, store, env = proj
+    tin = json.loads(json.dumps(tin).replace("@STORE@", str(store)))
+    proc = _run("guard", harness, _raw(tool, tin, work), work, env)
+    assert _denied(proc, harness)
+
+
+def test_other_tool_without_strings_allowed(proj: Proj) -> None:
+    work, _store, env = proj
+    proc = _run("guard", "codex", _raw("mcp__x__ping", {}, work), work, env)
+    assert proc.returncode == 0
+
+
+def test_other_tool_cwd_touching_store_is_denied(
+    proj: Proj, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work, store, env = proj
+    monkeypatch.setenv("XDG_DATA_HOME", env["XDG_DATA_HOME"])
+    policy = build_policy(load_config(work / ".ml-referee.toml"), work)
+    bad = _decide_event(
+        {"tool_name": "Other", "tool_input": {"strings": []}, "cwd": str(store)}, policy
+    )
+    assert bad.allow is False
+    ok = _decide_event(
+        {"tool_name": "Other", "tool_input": {"strings": []}, "cwd": str(work)}, policy
+    )
+    assert ok.allow is True
+
+
+@pytest.mark.parametrize(
+    ("tool", "tin"),
+    [
+        ("read", {"file_path": "a.py", "filePath": "@CFG@"}),
+        ("edit", {"file_path": "a.py", "new_string": "", "newString": "@STORE@"}),
+        ("write", {"file_path": "a.py", "content": "", "filePath": "@STORE@/x"}),
+        ("multiedit", {"file_path": "a.py", "edits": [{"new_string": "@STORE@/x"}]}),
+        ("grep", {"pattern": "x", "glob": "@STORE@"}),
+        ("grep", {"pattern": "x", "include": "@STORE@"}),
+        ("glob", {"pattern": "*.py", "glob": "@STORE@"}),
+        ("glob", {"pattern": "*.py", "include": "@STORE@"}),
+    ],
+)
+def test_alias_shadowing_and_extra_keys_denied(
+    proj: Proj, tool: str, tin: dict[str, object]
+) -> None:
+    work, store, env = proj
+    text = json.dumps(tin).replace("@STORE@", str(store)).replace("@CFG@", ".ml-referee.toml")
+    proc = _run("guard", "codex", _raw(tool, json.loads(text), work), work, env)
+    assert proc.returncode == 2
+
+
+def test_devin_undocumented_key_denied(proj: Proj) -> None:
+    work, store, env = proj
+    tin = {"file_path": "a.py", "target": f"{store}/holdout.parquet"}
+    proc = _run("guard", "devin", _raw("read", tin, work), work, env)
+    assert proc.returncode == 2
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "***Update File:.ml-referee.toml",
+        "  *** Update File:   .ml-referee.toml",
+        "*** Update File: .ml-referee.toml\r",
+    ],
+)
+def test_apply_patch_header_variants_denied(proj: Proj, header: str) -> None:
+    work, _store, env = proj
+    patch = f"*** Begin Patch\r\n{header}\r\n@@\r\n-a\r\n+b\r\n*** End Patch\r\n"
+    proc = _run("guard", "codex", _raw("apply_patch", {"command": patch}, work), work, env)
+    assert proc.returncode == 2
+
+
+def test_apply_patch_benign_multi_file_allowed(proj: Proj) -> None:
+    work, _store, env = proj
+    patch = (
+        "*** Begin Patch\n*** Update File: a.py\n@@\n-a\n+b\n"
+        "*** Add File: sub/b.py\n+x\n*** End Patch\n"
+    )
+    proc = _run("guard", "codex", _raw("apply_patch", {"command": patch}, work), work, env)
+    assert proc.returncode == 0
+    assert proc.stdout == ""
+
+
+def test_claude_with_permission_mode_deny_output_is_byte_identical(proj: Proj) -> None:
+    work, store, env = proj
+    stdin = _raw(
+        "Bash", {"command": f"cat {store}/holdout.parquet"}, work, permission_mode="default"
+    )
+    proc = _run("guard", "claude", stdin, work, env)
+    assert proc.returncode == 0
+    parsed = json.loads(proc.stdout)
+    assert set(parsed) == {"hookSpecificOutput"}
+    spec = parsed["hookSpecificOutput"]
+    assert set(spec) == {"hookEventName", "permissionDecision", "permissionDecisionReason"}
+    assert spec["hookEventName"] == "PreToolUse"
+    assert spec["permissionDecision"] == "deny"
+    assert proc.stdout == json.dumps(parsed) + "\n"
+    assert proc.stderr == ""
+
+
+def test_claude_post_with_permission_mode_records_exit_code(proj: Proj) -> None:
+    work, store, env = proj
+    stdin = _raw(
+        "Bash",
+        {"command": "python train.py --lr 2"},
+        work,
+        hook_event_name="PostToolUse",
+        permission_mode="default",
+        tool_response={"stdout": "", "exit_code": 3},
+    )
+    proc = _run("recorder", "claude", stdin, work, env)
+    assert proc.returncode == 0
+    records = Ledger(store / "ledger.jsonl").records()
+    assert len(records) == 1
+    assert records[0].payload["exit_code"] == 3
+    assert records[0].payload["failed"] is True

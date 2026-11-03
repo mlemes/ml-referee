@@ -106,3 +106,26 @@ def test_install_dry_run_does_not_write_agents_md(tmp_path: Path) -> None:
 def test_claude_does_not_write_agents_md(tmp_path: Path) -> None:
     install("claude", tmp_path)
     assert not (tmp_path / "AGENTS.md").exists()
+
+
+# --- malformed marker handling ---
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"keep\n{START}\nhalf a block\n",
+        f"keep\n{START}\na\n{END}\n{START}\nb\n",
+        f"{START}\na\n{START}\nb\n{END}\n",
+        f"keep\n{END}\nstray end\n",
+    ],
+)
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_apply_block_malformed_markers_raise_and_leave_file(
+    tmp_path: Path, text: str, dry_run: bool
+) -> None:
+    path = tmp_path / "AGENTS.md"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match="marker"):
+        apply_block(path, dry_run=dry_run)
+    assert path.read_text(encoding="utf-8") == text

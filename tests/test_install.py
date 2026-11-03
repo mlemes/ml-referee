@@ -368,3 +368,45 @@ def test_generated_codex_guard_runs_without_inherited_pythonpath(tmp_path: Path)
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+# --- multi-harness hardening ---
+
+PACKAGED_JS = (
+    Path(ml_referee.__file__).resolve().parent / "data" / "opencode" / "ml-referee.js"
+)
+
+
+def test_matcher_group_with_user_and_our_hook_keeps_user_hook(tmp_path: Path) -> None:
+    target = tmp_path / ".codex" / "hooks.json"
+    target.parent.mkdir(parents=True)
+    stale = "env PYTHONPATH=/old /old/py -m ml_referee.hooks.guard --harness codex"
+    user = {"type": "command", "command": "echo user-hook"}
+    group = {"matcher": "", "hooks": [user, {"type": "command", "command": stale}]}
+    target.write_text(json.dumps({"hooks": {"PreToolUse": [group]}}), encoding="utf-8")
+    install("codex", tmp_path, python=PY)
+    pre = json.loads(target.read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
+    commands = [h["command"] for g in pre for h in g["hooks"]]
+    assert commands.count("echo user-hook") == 1
+    assert stale not in commands
+    ours = [c for c in commands if "ml_referee.hooks.guard" in c]
+    assert len(ours) == 1
+    assert shlex.quote(PY) in ours[0]
+
+
+def test_installer_default_plugin_source_is_packaged_path() -> None:
+    from ml_referee import install as mod  # noqa: PLC0415
+
+    assert PACKAGED_JS.is_file()
+    assert Path(mod.OPENCODE_PLUGIN_SRC).resolve() == PACKAGED_JS.resolve()
+
+
+def test_opencode_installs_from_packaged_path_with_constants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(install_mod, "OPENCODE_PLUGIN_SRC", PACKAGED_JS)
+    install("opencode", tmp_path, python=PY)
+    text = (tmp_path / ".opencode" / "plugins" / "ml-referee.js").read_text(encoding="utf-8")
+    assert PY in text
+    assert str(Path(ml_referee.__file__).resolve().parent.parent) in text
+    assert "PYTHONPATH" in text
