@@ -23,6 +23,7 @@ ml_referee = ["py.typed", "data/opencode/*.js"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "."]
+markers = ["integration: needs docker and generated BAITBENCH tasks"]
 
 [tool.ruff]
 target-version = "py311"
@@ -38,3 +39,6 @@ python_version = "3.11"
 files = ["src"]
 strict = true
 
+
+[tool.ruff.lint.per-file-ignores]
+"bench/baitbench/*" = ["E501", "Q001"]
