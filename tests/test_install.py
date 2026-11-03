@@ -63,7 +63,10 @@ def _expected_post_entry(harness: str, name: str, python: str) -> dict[str, Any]
 def test_creates_file_with_documented_shape(harness: str, tmp_path: Path) -> None:
     changes = install(harness, tmp_path, python=PY)
     target = tmp_path / PATHS[harness]
-    assert changes == [Change(path=target, action="create")]
+    assert changes == [
+        Change(path=target, action="create"),
+        Change(path=tmp_path / "AGENTS.md", action="create"),
+    ]
     data = json.loads(target.read_text(encoding="utf-8"))
     events = _events(harness, data)
     if harness == "codex":
@@ -108,7 +111,10 @@ def test_second_run_is_unchanged(harness: str, tmp_path: Path) -> None:
     install(harness, tmp_path, python=PY)
     before = _snapshot(tmp_path)
     changes = install(harness, tmp_path, python=PY)
-    assert changes == [Change(path=tmp_path / PATHS[harness], action="unchanged")]
+    assert changes == [
+        Change(path=tmp_path / PATHS[harness], action="unchanged"),
+        Change(path=tmp_path / "AGENTS.md", action="unchanged"),
+    ]
     assert _snapshot(tmp_path) == before
 
 
@@ -137,7 +143,10 @@ def test_merge_preserves_user_hooks(harness: str, tmp_path: Path) -> None:
 
     changes = install(harness, tmp_path, python=PY)
 
-    assert changes == [Change(path=target, action="merge")]
+    assert changes == [
+        Change(path=target, action="merge"),
+        Change(path=tmp_path / "AGENTS.md", action="create"),
+    ]
     data = json.loads(target.read_text(encoding="utf-8"))
     events = _events(harness, data)
     if harness == "agy":
@@ -191,7 +200,10 @@ def test_merge_keeps_user_entries_in_same_event(harness: str, tmp_path: Path) ->
 @pytest.mark.parametrize("harness", JSON_HARNESSES)
 def test_dry_run_writes_nothing(harness: str, tmp_path: Path) -> None:
     changes = install(harness, tmp_path, dry_run=True, python=PY)
-    assert changes == [Change(path=tmp_path / PATHS[harness], action="create")]
+    assert changes == [
+        Change(path=tmp_path / PATHS[harness], action="create"),
+        Change(path=tmp_path / "AGENTS.md", action="create"),
+    ]
     assert _snapshot(tmp_path) == {}
 
 
@@ -201,7 +213,10 @@ def test_dry_run_merge_leaves_file_untouched(harness: str, tmp_path: Path) -> No
     target.parent.mkdir(parents=True)
     target.write_text("{}", encoding="utf-8")
     changes = install(harness, tmp_path, dry_run=True, python=PY)
-    assert changes == [Change(path=target, action="merge")]
+    assert changes == [
+        Change(path=target, action="merge"),
+        Change(path=tmp_path / "AGENTS.md", action="create"),
+    ]
     assert target.read_text(encoding="utf-8") == "{}"
 
 
@@ -218,10 +233,17 @@ def test_invalid_json_raises_without_overwrite(harness: str, tmp_path: Path) -> 
 def test_opencode_copies_plugin(tmp_path: Path, plugin_src: Path) -> None:
     changes = install("opencode", tmp_path)
     target = tmp_path / ".opencode" / "plugins" / "ml-referee.js"
-    assert changes == [Change(path=target, action="create")]
+    agents = tmp_path / "AGENTS.md"
+    assert changes == [
+        Change(path=target, action="create"),
+        Change(path=agents, action="create"),
+    ]
     assert target.read_text(encoding="utf-8") == "// stub plugin\n"
     again = install("opencode", tmp_path)
-    assert again == [Change(path=target, action="unchanged")]
+    assert again == [
+        Change(path=target, action="unchanged"),
+        Change(path=agents, action="unchanged"),
+    ]
     plugin_src.write_text("// v2\n", encoding="utf-8")
     updated = install("opencode", tmp_path)
     assert updated[0].action == "merge"
@@ -232,6 +254,7 @@ def test_opencode_dry_run_writes_nothing(tmp_path: Path) -> None:
     changes = install("opencode", tmp_path, dry_run=True)
     assert changes == [
         Change(path=tmp_path / ".opencode" / "plugins" / "ml-referee.js", action="create"),
+        Change(path=tmp_path / "AGENTS.md", action="create"),
     ]
     assert _snapshot(tmp_path) == {}
 
@@ -262,7 +285,7 @@ def test_cli_install_dry_run(tmp_path: Path) -> None:
 def test_cli_install_all_covers_every_harness(tmp_path: Path) -> None:
     assert main(["install", "--harness", "all", "--root", str(tmp_path)]) == 0
     files = set(_snapshot(tmp_path))
-    assert files == {*PATHS.values(), ".opencode/plugins/ml-referee.js"}
+    assert files == {*PATHS.values(), ".opencode/plugins/ml-referee.js", "AGENTS.md"}
     assert set(HARNESSES) == {"claude", "codex", "devin", "agy", "opencode"}
 
 

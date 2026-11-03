@@ -126,6 +126,11 @@ def install(
     if harness == "claude":
         sys.stdout.write("Claude Code: run `claude --plugin-dir <ml-referee repo>`\n")
         return []
+    from ml_referee.agents_md import apply_block  # noqa: PLC0415 (avoids import cycle)
+
     if harness == "opencode":
-        return [_install_opencode(root, dry_run)]
-    return [_install_json(harness, root, dry_run, python or sys.executable)]
+        changes = [_install_opencode(root, dry_run)]
+    else:
+        changes = [_install_json(harness, root, dry_run, python or sys.executable)]
+    changes.append(apply_block(root / "AGENTS.md", dry_run=dry_run))
+    return changes
