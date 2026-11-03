@@ -327,9 +327,13 @@ def _agent_stage(  # noqa: PLR0913, PLR0917
     home: Path, program: str,
 ) -> tuple[int, str, str]:
     binary = Path(os.path.realpath(shutil.which(agent) or agent))
+    binaries = [(binary, f"{real.AGENT_ROOT}/{agent}", "ro")]
+    helper = binary.parent / "codex-code-mode-host"
+    if agent == "codex" and helper.is_file():
+        binaries.append((helper, f"{real.AGENT_ROOT}/codex-code-mode-host", "ro"))
     argv = [
         *container_args(
-            "agent", [*mounts, (home, real.AGENT_HOME, "rw"), (binary, f"{real.AGENT_ROOT}/{agent}", "ro")],
+            "agent", [*mounts, (home, real.AGENT_HOME, "rw"), *binaries],
             {"HOME": real.AGENT_HOME, "XDG_DATA_HOME": "/state", "PYTHONDONTWRITEBYTECODE": "1"},
             network=True,
         ),

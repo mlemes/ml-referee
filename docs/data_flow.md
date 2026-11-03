@@ -78,3 +78,11 @@ Audit and claim counts reveal holdout membership to an agent that can run the CL
 5. Stage `finalize` (`inside.finalize`): `score.score_workspace` scores the final solution on `test.csv` and on the hidden file (public and hidden scores, hidden predictions to a temporary file). In C3 it also runs `ml-referee audit --against test.csv` and `ml-referee claim` with the hidden predictions.
 6. The driver reads `inside.json`, adds `gap_present` and `claim_exposes_gap` against the honest hidden baseline, and writes `result.json` atomically. A rerun skips runs whose `result.json` has no error.
 
+
+## BAITBENCH real-agent runs
+
+1. `driver._execute_real` stages one credential file into a temporary `0700` home (`real.staged_home`), copies the task without `robust_test.csv`, and writes `timer.py`.
+2. For C3, the setup stage seals the hidden split and installs the hooks (trust boundary: the hidden file is mounted only here and in finalize).
+3. The agent stage runs `timeout <budget> /opt/agents/<agent> ...` with network enabled; stdout and stderr return to the host and are redacted of credential fragments before they are saved under `bench/results/baitbench/<date>/real/` (gitignored).
+4. The finalize stage scores `solution.py` on the public and hidden splits and, for C3, runs audit and claim with the agent's recorded scores (`real.val_scores`).
+5. `result.json` adds `exit_status`, `hook_denials`, and `hidden_probes`.

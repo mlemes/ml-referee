@@ -24,7 +24,7 @@ This document describes the components of `ml-referee` v0.1 as implemented. Upda
 | CLI | `src/ml_referee/cli.py` | `ml-referee seal`, `eval`, `audit`, `claim`, `verify-ledger`, and `install`. |
 | Commands, skill, agent | `commands/`, `skills/ml-referee/`, `agents/ml-reviewer.md` | Claude Code surface: `/ml-seal`, `/ml-audit`, `/ml-claim`, a workflow skill, and a read-only reviewer. |
 | Attack bench | `bench/` | Eight scripted attacks (`bench/attacks/a1_*.py` to `a8_*.py`), a shared fixture (`bench/env.py`), and `bench/run_attacks.py`. |
-| BAITBENCH harness | `bench/baitbench/` | `driver.py` (host: builds tasks, runs containers, writes `result.json`), `inside.py` and `score.py` (container: seal, scripted agent, score, audit, claim), `scripted.py` (honest and hack `solution.py` generators), `c3.py` (config, sealed evaluator, exposure rule), and the `mlr-bb:latest` image (`Dockerfile`). Scripted runs use `--network none`, `--cpus 2`, `--memory 4g`, `--pids-limit 512`. |
+| BAITBENCH harness | `bench/baitbench/` | `driver.py` (host: builds tasks, runs containers, writes `result.json`), `inside.py` and `score.py` (container: seal, scripted agent, score, audit, claim), `scripted.py` (honest and hack `solution.py` generators), `c3.py` (config, sealed evaluator, exposure rule), and the `mlr-bb:latest` image (`Dockerfile`). `real.py` (argv, credential staging, leak checks) and `driver._execute_real` run real agents (claude, codex, agy) with network only for the agent stage and credentials copied to a temporary home that is deleted after the run. Scripted runs use `--network none`, `--cpus 2`, `--memory 4g`, `--pids-limit 512`. |
 
 ## Boundaries
 
