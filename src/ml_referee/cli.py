@@ -43,7 +43,9 @@ def _parser() -> argparse.ArgumentParser:
         if name == "audit":
             command.add_argument("--sources", nargs="*", type=Path, default=[])
         if name in {"audit", "claim"}:
-            command.add_argument("--against", nargs="*", type=Path, default=[])
+            command.add_argument(
+                "--against", nargs="*", type=Path, action="extend", default=[],
+            )
         if name == "claim":
             command.add_argument("--val-scores", type=Path)
             command.add_argument("--p-value", type=float)
