@@ -220,3 +220,146 @@ def test_workspace_train_file_keeps_mode(
     cfg.train_path.chmod(0o640)
     seal(cfg, ev)
     assert stat.S_IMODE(cfg.train_path.stat().st_mode) == 0o640
+
+
+def _holdout_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Five rows with new ids, new groups, and a non-sorted order."""
+    hold = df.iloc[[7, 3, 150, 0, 99]].copy()
+    hold["row_id"] = [1005, 1003, 1001, 1004, 1002]
+    hold["g"] = [900, 901, 902, 903, 904]
+    return hold.reset_index(drop=True)
+
+
+def _write(frame: pd.DataFrame, path: Path) -> Path:
+    if path.suffix == ".csv":
+        frame.to_csv(path, index=False)
+    else:
+        frame.to_parquet(path, index=False)
+    return path
+
+
+def _assert_refused(cfg: Config, ev: Path, src: Path) -> None:
+    before = cfg.train_path.read_bytes()
+    with pytest.raises(SealError):
+        seal(cfg, ev, src)
+    assert not store_dir(cfg).exists()
+    assert cfg.train_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("train_fmt", ["csv", "parquet"])
+@pytest.mark.parametrize("hold_fmt", ["csv", "parquet"])
+def test_seal_with_holdout_file_keeps_order_and_train(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, train_fmt: str, hold_fmt: str
+) -> None:
+    cfg, ev, df = _setup(tmp_path, monkeypatch, train_fmt)
+    train_bytes = cfg.train_path.read_bytes()
+    hold = _holdout_frame(df)
+    src = _write(hold[list(reversed(hold.columns))], tmp_path / f"h.{hold_fmt}")
+    manifest = seal(cfg, ev, src)
+    sealed = pd.read_parquet(store_dir(cfg) / "holdout.parquet")
+    assert list(sealed.columns) == list(df.columns)
+    assert list(sealed["row_id"]) == [1005, 1003, 1001, 1004, 1002]
+    assert sealed.equals(hold)
+    assert manifest.n_holdout == 5
+    assert load_manifest(cfg) == manifest
+    assert verify_manifest(cfg) is True
+    assert cfg.train_path.read_bytes() == train_bytes
+    assert len(_read(cfg.train_path)) == len(df)
+    source = store_dir(cfg) / f"source.{train_fmt}"
+    assert source.read_bytes() == train_bytes
+    assert stat.S_IMODE(source.stat().st_mode) == 0o400
+    assert stat.S_IMODE((store_dir(cfg) / "holdout.parquet").stat().st_mode) == 0o400
+    assert (store_dir(cfg) / "evaluator.py").read_text() == EVALUATOR
+
+
+def test_seal_with_parquet_holdout_is_byte_identical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, ev, df = _setup(tmp_path, monkeypatch, "parquet")
+    src = _write(_holdout_frame(df), tmp_path / "h.parquet")
+    seal(cfg, ev, src)
+    assert (store_dir(cfg) / "holdout.parquet").read_bytes() == src.read_bytes()
+
+
+def test_seal_with_holdout_file_skips_group_split(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, ev, df = _setup(tmp_path, monkeypatch)
+    hold = df.iloc[:3].copy()  # groups also present in train
+    src = _write(hold, tmp_path / "h.csv")
+    manifest = seal(cfg, ev, src)
+    assert manifest.n_holdout == 3
+    assert len(_read(cfg.train_path)) == len(df)
+    assert _holdout_ids(cfg) == {0, 1, 2}
+
+
+def test_seal_with_holdout_file_records_one_seal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, ev, df = _setup(tmp_path, monkeypatch)
+    seal(cfg, ev, _write(_holdout_frame(df), tmp_path / "h.csv"))
+    records = Ledger(store_dir(cfg) / "ledger.jsonl").records()
+    assert [r.kind for r in records] == ["seal"]
+
+
+def test_seal_with_holdout_sharing_rows_with_train_still_seals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, ev, df = _setup(tmp_path, monkeypatch)
+    src = _write(df.iloc[:10].copy(), tmp_path / "h.parquet")
+    manifest = seal(cfg, ev, src)
+    assert manifest.n_holdout == 10
+    assert _holdout_ids(cfg) == set(range(10))
+    assert set(_read(cfg.train_path)["row_id"]) >= set(range(10))
+
+
+@pytest.mark.parametrize("variant", ["missing", "extra", "renamed", "no_label"])
+def test_seal_holdout_columns_differ_raises_before_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variant: str
+) -> None:
+    cfg, ev, df = _setup(tmp_path, monkeypatch)
+    hold = _holdout_frame(df)
+    if variant == "missing":
+        hold = hold.drop(columns=["x"])
+    elif variant == "extra":
+        hold["extra"] = 1
+    elif variant == "renamed":
+        hold = hold.rename(columns={"x": "x2"})
+    else:
+        hold = hold.drop(columns=["y"])
+    _assert_refused(cfg, ev, _write(hold, tmp_path / "h.csv"))
+
+
+@pytest.mark.parametrize("suffix", [".csv", ".parquet"])
+def test_seal_holdout_zero_rows_raises_before_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str
+) -> None:
+    cfg, ev, df = _setup(tmp_path, monkeypatch)
+    empty = _holdout_frame(df).iloc[:0]
+    _assert_refused(cfg, ev, _write(empty, tmp_path / f"h{suffix}"))
+
+
+@pytest.mark.parametrize("suffix", [".csv", ".parquet"])
+def test_seal_holdout_unreadable_raises_before_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str
+) -> None:
+    cfg, ev, _ = _setup(tmp_path, monkeypatch)
+    bad = tmp_path / f"h{suffix}"
+    bad.write_bytes(b"\x00\xff\x00not a table")
+    _assert_refused(cfg, ev, bad)
+
+
+def test_seal_holdout_missing_file_raises_before_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, ev, _ = _setup(tmp_path, monkeypatch)
+    _assert_refused(cfg, ev, tmp_path / "absent.csv")
+
+
+def test_seal_holdout_bad_suffix_raises_before_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, ev, df = _setup(tmp_path, monkeypatch)
+    path = tmp_path / "h.txt"
+    _holdout_frame(df).to_csv(path, index=False)
+    _assert_refused(cfg, ev, path)

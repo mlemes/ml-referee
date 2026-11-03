@@ -37,6 +37,7 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--config", type=Path)
         if name == "seal":
             command.add_argument("--evaluator", type=Path, required=True)
+            command.add_argument("--holdout-file", type=Path)
         if name in {"eval", "claim"}:
             command.add_argument("--predictions", type=Path, required=True)
         if name == "audit":
@@ -67,7 +68,7 @@ def _audit(cfg: Config, sources: list[Path]) -> list[Finding]:
 
 def _run(args: argparse.Namespace, cfg: Config) -> int:  # noqa: C901, PLR0912
     if args.command == "seal":
-        manifest = seal(cfg, args.evaluator)
+        manifest = seal(cfg, args.evaluator, args.holdout_file)
         sys.stdout.write(f"Sealed holdout rows: {manifest.n_holdout}\n")
     elif args.command == "eval":
         result = run_holdout_eval(cfg, args.predictions)
