@@ -21,9 +21,10 @@ POST_MATCHER = {"codex": "^Bash$", "devin": "^exec$", "agy": "run_command"}
 
 
 @pytest.fixture(autouse=True)
-def plugin_src(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    src = tmp_path / "plugin-src" / "ml-referee.js"
-    src.parent.mkdir()
+def plugin_src(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    src = tmp_path_factory.mktemp("plugin-src") / "ml-referee.js"
     src.write_text("// stub plugin\n", encoding="utf-8")
     monkeypatch.setattr(install_mod, "OPENCODE_PLUGIN_SRC", src)
     return src
@@ -154,7 +155,16 @@ def test_merge_preserves_user_hooks(harness: str, tmp_path: Path) -> None:
         guard = events["PreToolUse"][1]["hooks"][0]["command"]
         assert f"-m ml_referee.hooks.guard --harness {harness}" in guard
         assert "ml-referee" in guard
-    assert events["PostToolUse"] == [_expected_post_entry(harness, harness, PY)]
+    post = events["PostToolUse"]
+    assert len(post) == 1
+    expected = _expected_post_entry(harness, harness, PY)
+    assert post[0]["matcher"] == expected["matcher"]
+    assert len(post[0]["hooks"]) == 1
+    post_hook = post[0]["hooks"][0]
+    assert post_hook["type"] == "command"
+    assert post_hook["timeout"] == 30
+    assert "ml-referee" in post_hook["command"]
+    assert f"-m ml_referee.hooks.recorder --harness {harness}" in post_hook["command"]
     # merging again is idempotent
     assert install(harness, tmp_path, python=PY)[0].action == "unchanged"
 
