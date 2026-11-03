@@ -12,8 +12,12 @@ This document describes the components of `ml-referee` v0.1 as implemented. Upda
 | Ledger | `src/ml_referee/ledger.py` | Append-only, hash-chained JSONL log under an `flock`. Kinds: `seal`, `trial`, `eval`. Stores the last hash in `head.txt`, written atomically. |
 | Seal | `src/ml_referee/seal.py` | Moves the source data into the store, writes the holdout, evaluator, and manifest, and rewrites the workspace train file with the non-holdout rows. |
 | Policy | `src/ml_referee/policy.py` | Decides whether a tool call touches the sealed store. |
-| Guard hook | `src/ml_referee/hooks/guard.py` | `PreToolUse` entry point. Fails closed. |
-| Recorder hook | `src/ml_referee/hooks/recorder.py` | `PostToolUse` entry point. Appends matching trial commands to the ledger once the project is sealed. Never blocks. |
+| Harness adapter | `src/ml_referee/harness.py` | Normalizes each harness payload (Claude Code, Codex, Devin, agy, opencode) into canonical events. Maps the tool names and field keys of each harness. Formats each deny decision for the harness. Unknown tools normalize to `Other`. |
+| Guard hook | `src/ml_referee/hooks/guard.py` | `PreToolUse` entry point. Takes `--harness NAME` (default: auto-detect). Normalizes the payload through the harness adapter and denies when any event is denied. Fails closed. |
+| Recorder hook | `src/ml_referee/hooks/recorder.py` | `PostToolUse` entry point. Takes `--harness NAME`. Takes the exit code and failure flag from the canonical event. Appends matching trial commands to the ledger once the project is sealed. Never blocks. |
+| Installer | `src/ml_referee/install.py` | `ml-referee install --harness NAME`. Writes or merges the hook file for each harness, tags every entry with `ml-referee`, and is idempotent. Supports `--dry-run`. Never overwrites a user's hook file. |
+| AGENTS.md block | `src/ml_referee/agents_md.py` | Writes a block between `<!-- ml-referee:start -->` and `<!-- ml-referee:end -->` that tells the agent not to touch the sealed store or the config. The installer writes it for Codex, Devin, agy, and opencode. |
+| Integrations | `integrations/opencode/ml-referee.js` | opencode plugin. Its `tool.execute.before` hook runs the guard with `--harness opencode` and throws on a deny. The installer copies it to `.opencode/plugins/`. |
 | Evaluator runner | `src/ml_referee/runner.py` | Runs the sealed evaluator within the holdout budget. |
 | Audit | `src/ml_referee/audit/checks.py` | Deterministic leakage checks. |
 | Claim | `src/ml_referee/claim/` | Statistics (`stats.py`) and report (`report.py`). |
