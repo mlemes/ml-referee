@@ -44,7 +44,7 @@ The following table lists the install output, the trust step, the fail mode, and
 - Guard coverage differs per harness. Codex has no `Read` tool, so Codex reads go through `Bash`.
 - Devin and agy fail open when a hook crashes or times out.
 - Codex hooks do nothing until you trust them in `/hooks`.
-- Unknown tool names are scanned by substring only.
+- Unknown and unmapped tools (MCP tools, for example) become `Other` events. The guard checks every string as a candidate path (config file, store) and as content, and it validates the event `cwd`. The adapter also re-scans any string key it does not map, such as extra or shadowed aliases.
 - Hooks are a policy layer, not a sandbox. An agent with unrestricted shell access can route around them.
 - The hook command runs the Python interpreter that the installer records. That interpreter must be able to import `ml_referee`. If it cannot, the hook exits with code 1 and the harness can fail open.
 

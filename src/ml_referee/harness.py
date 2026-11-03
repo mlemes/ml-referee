@@ -13,8 +13,10 @@ from typing import NoReturn
 HARNESSES: tuple[str, ...] = ("claude", "codex", "devin", "agy", "opencode")
 
 _PATCH_HEADER = re.compile(
-    r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+?)\s*$",
+    r"^\s*\*\*\*\s*(?:Add File|Update File|Delete File|Move to):\s*(.+?)\s*$",
 )
+_PATCH_MARKER = re.compile(r"^\s*\*\*\*\s*(?:Begin Patch|End Patch|End of File)\s*$")
+_PATCH_KEYS = ("command", "patch", "patchText")
 
 _TOOL_MAP = {
     "bash": "Bash",
@@ -26,6 +28,7 @@ _TOOL_MAP = {
     "grep": "Grep",
     "glob": "Glob",
 }
+_PATCH_TOOLS = ("apply_patch", "patch")
 
 Event = dict[str, object]
 
@@ -40,9 +43,10 @@ class _Ctx:
     post: bool
     exit_code: int | None = None
     failed: bool = False
+    config_root: str | None = None
 
     def make(self, tool: str, tool_input: dict[str, object]) -> Event:
-        return {
+        event: Event = {
             "tool_name": tool,
             "tool_input": tool_input,
             "cwd": self.cwd,
@@ -50,13 +54,16 @@ class _Ctx:
             "exit_code": self.exit_code,
             "failed": self.failed,
         }
+        if self.config_root is not None:
+            event["config_root"] = self.config_root
+        return event
 
 
 def detect_harness(raw: dict[str, object], environ: Mapping[str, str]) -> str:
     """Guess which harness produced ``raw`` from payload shape and environment."""
     if "toolCall" in raw:
         return "agy"
-    if "turn_id" in raw or "permission_mode" in raw:
+    if "turn_id" in raw:
         return "codex"
     if "prompt_id" in raw or environ.get("DEVIN_PROJECT_DIR"):
         return "devin"
@@ -92,36 +99,67 @@ def _patch_events(patch: str, ctx: _Ctx) -> list[Event]:
         m = _PATCH_HEADER.match(line)
         if m:
             paths.append(m.group(1))
+        elif line.lstrip().startswith("***") and not _PATCH_MARKER.match(line):
+            _fail(f"apply_patch with unrecognized header: {line.strip()}")
     if not paths:
         _fail("apply_patch without file headers")
     return [ctx.make("Write", {"file_path": p, "content": patch}) for p in paths]
 
 
-def _opt_str(src: Mapping[str, object], *keys: str) -> str:
-    """Return the first present key as str ("" if none); non-str values raise."""
-    found: str | None = None
+def _pick(src: Mapping[str, object], *keys: str) -> tuple[str, str]:
+    """Return the first non-empty str among keys and its key; non-str raises."""
+    found, used = "", ""
     for key in keys:
         if key not in src:
             continue
         val = src[key]
         if not isinstance(val, str):
             _fail(f"{key} must be a string")
-        if found is None:
-            found = val
-    return found or ""
+        if val and not used:
+            found, used = val, key
+    return found, used
+
+
+def _with_extras(
+    events: list[Event],
+    tin: Mapping[str, object],
+    used: set[str],
+    ctx: _Ctx,
+) -> list[Event]:
+    """Append an ``Other`` event for every string value the tool mapping dropped."""
+    extra: list[str] = []
+    for key, value in tin.items():
+        if key not in used:
+            extra.extend(_strings(value))
+    if extra:
+        events.append(ctx.make("Other", {"strings": extra}))
+    return events
 
 
 def _file_tool(kind: str, tin: Mapping[str, object], ctx: _Ctx) -> list[Event]:
-    path = _opt_str(tin, "file_path", "filePath", "path")
-    if not path:
+    aliases = ("file_path", "filePath", "path")
+    paths = [
+        (key, val) for key in aliases if key in tin for val in [tin[key]]
+    ]
+    for key, val in paths:
+        if not isinstance(val, str):
+            _fail(f"{key} must be a string")
+    chosen = [(k, str(v)) for k, v in paths if v]
+    if not chosen:
         _fail(f"{kind} without file path")
-    ti: dict[str, object] = {"file_path": path}
+    # Only the first alias counts as "used"; the others are re-scanned as Other.
+    used = {chosen[0][0]}
+    extras: dict[str, str] = {}
     if kind == "Write":
-        ti["content"] = _opt_str(tin, "content")
+        extras["content"], key = _pick(tin, "content")
+        used.add(key)
     elif kind == "Edit":
-        ti["new_string"] = _opt_str(tin, "new_string", "newString")
-        ti["old_string"] = _opt_str(tin, "old_string", "oldString")
-    return [ctx.make(kind, ti)]
+        extras["new_string"], key = _pick(tin, "new_string", "newString")
+        used.add(key)
+        extras["old_string"], key = _pick(tin, "old_string", "oldString")
+        used.add(key)
+    events = [ctx.make(kind, {"file_path": p, **extras}) for _, p in chosen]
+    return _with_extras(events, tin, used, ctx)
 
 
 def _search_tool(kind: str, tin: Mapping[str, object], ctx: _Ctx) -> list[Event]:
@@ -129,22 +167,24 @@ def _search_tool(kind: str, tin: Mapping[str, object], ctx: _Ctx) -> list[Event]
     if not isinstance(pattern, str):
         _fail(f"{kind} pattern must be a string")
     ti: dict[str, object] = {"pattern": pattern}
+    used = {"pattern"}
     if "path" in tin:
         path = tin["path"]
         if not isinstance(path, str):
             _fail(f"{kind} path must be a string")
         ti["path"] = path
-    return [ctx.make(kind, ti)]
+        used.add("path")
+    return _with_extras([ctx.make(kind, ti)], tin, used, ctx)
 
 
 def _generic(tool: str, tin: Mapping[str, object], ctx: _Ctx) -> list[Event]:
     lowered = tool.lower()
     kind = _TOOL_MAP.get(lowered)
-    if lowered == "apply_patch":
-        patch = tin.get("command")
-        if not isinstance(patch, str):
-            _fail("apply_patch without patch text")
-        return _patch_events(patch, ctx)
+    if lowered in _PATCH_TOOLS:
+        texts = {tin[k] for k in _PATCH_KEYS if k in tin}
+        if len(texts) != 1 or not all(isinstance(t, str) for t in texts):
+            _fail(f"{tool} needs exactly one string patch text")
+        return _patch_events(str(next(iter(texts))), ctx)
     if kind == "Bash":
         cmd = tin.get("command")
         if not isinstance(cmd, str):
@@ -245,13 +285,20 @@ def _normalize_agy(raw: dict[str, object]) -> list[Event]:
     if not isinstance(name, str) or not isinstance(args, dict):
         _fail("agy toolCall malformed")
     ws = raw.get("workspacePaths")
-    cwd = str(Path.cwd())
-    if isinstance(ws, list) and ws and isinstance(ws[0], str):
-        cwd = ws[0]
+    root = str(Path.cwd())
+    if isinstance(ws, list) and ws and isinstance(ws[0], str) and ws[0]:
+        root = ws[0]
+    cwd = root
     cwd_arg = args.get("Cwd")
     if isinstance(cwd_arg, str) and cwd_arg:
-        cwd = cwd_arg
-    ctx = _Ctx(cwd=cwd, post="error" in raw, failed=bool(raw.get("error")))
+        cwd = os.path.normpath(os.path.join(root, cwd_arg))  # noqa: PTH118
+    error = raw.get("error")
+    ctx = _Ctx(
+        cwd=cwd,
+        post=isinstance(error, str),
+        failed=isinstance(error, str) and bool(error),
+        config_root=root,
+    )
     events = _agy_dispatch(name, args, ctx)
     if events is None:
         return [ctx.make("Other", {"strings": _strings(args)})]
@@ -275,12 +322,13 @@ def _status(
     elif harness == "devin" and post:
         resp = raw.get("tool_response")
         failed = isinstance(resp, dict) and resp.get("success") is False
-    elif post_failure:
-        failed = True
+    elif post or post_failure:
+        failed = post_failure
         resp = raw.get("tool_response")
         code = resp.get("exit_code") if isinstance(resp, dict) else None
         if isinstance(code, int) and not isinstance(code, bool):
             exit_code = code
+            failed = failed or code != 0
     return exit_code, failed
 
 

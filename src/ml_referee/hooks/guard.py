@@ -25,14 +25,23 @@ def _decide_event(event: dict[str, object], policy: Policy) -> Decision:
     strings = inputs.get("strings") if isinstance(inputs, dict) else None
     if not isinstance(strings, list):
         return Decision(allow=False, reason="Malformed hook event")
+    cwd = event.get("cwd")
+    # Validate the cwd even when there are no strings.
+    decision = decide(
+        {"tool_name": "Glob", "tool_input": {"pattern": ""}, "cwd": cwd},
+        policy,
+    )
+    if not decision.allow:
+        return decision
     for value in strings:
         if not isinstance(value, str):
             return Decision(allow=False, reason="Malformed hook event")
+        # Each string is both a candidate path (config file, store) and content.
         decision = decide(
             {
-                "tool_name": "Grep",
-                "tool_input": {"pattern": value},
-                "cwd": event.get("cwd"),
+                "tool_name": "Write",
+                "tool_input": {"file_path": value, "content": value},
+                "cwd": cwd,
             },
             policy,
         )
@@ -41,38 +50,34 @@ def _decide_event(event: dict[str, object], policy: Policy) -> Decision:
     return Decision(allow=True, reason="No sealed store access")
 
 
-def _raw_cwd(name: str, raw: dict[str, object]) -> str | None:
-    """Resolve the workspace directory from a raw payload before normalizing."""
+def _config_root(name: str, raw: dict[str, object]) -> str | None:
+    """Return the directory to search for ``.ml-referee.toml`` (never a tool arg)."""
     if name == "agy":
-        default = str(Path.cwd())
         ws = raw.get("workspacePaths")
-        if isinstance(ws, list) and ws and isinstance(ws[0], str):
-            default = ws[0]
-        call = raw.get("toolCall")
-        args = call.get("args") if isinstance(call, dict) else None
-        cwd_arg = args.get("Cwd") if isinstance(args, dict) else None
-        return cwd_arg if isinstance(cwd_arg, str) and cwd_arg else default
+        if isinstance(ws, list) and ws and isinstance(ws[0], str) and ws[0]:
+            return ws[0]
+        return str(Path.cwd())
     if name == "devin":
         return os.environ.get("DEVIN_PROJECT_DIR") or str(Path.cwd())
     cwd = raw.get("cwd")
     return cwd if isinstance(cwd, str) and cwd else None
 
 
-def _evaluate(  # noqa: C901, PLR0911
+def _evaluate(  # noqa: PLR0911, C901
     harness: str | None,
     raw: object,
-) -> tuple[str, Decision, bool]:
-    """Return ``(harness, decision, is_post)``; allow when no config exists."""
+) -> tuple[str, Decision]:
+    """Return ``(harness, decision)``; allow when no config exists."""
     name = harness or detect_harness({}, os.environ)
     if isinstance(raw, dict) and harness is None:
         name = detect_harness(raw, os.environ)
     malformed = Decision(allow=False, reason="Malformed hook event")
     if not isinstance(raw, dict):
-        return name, malformed, False
+        return name, malformed
     try:
-        cwd = _raw_cwd(name, raw)
+        cwd = _config_root(name, raw)
         if cwd is None:
-            return name, malformed, False
+            return name, malformed
         workspace = Path(cwd).resolve()
         for directory in (workspace, *workspace.parents):
             config = directory / ".ml-referee.toml"
@@ -82,22 +87,22 @@ def _evaluate(  # noqa: C901, PLR0911
                 continue
             events = normalize(name, raw)
             if not events:
-                return name, malformed, False
-            # agy's combined runner sends PostToolUse payloads here; just ack them.
-            if name == "agy" and all(
-                event.get("hook_event_name") == "PostToolUse" for event in events
-            ):
-                return name, Decision(allow=True, reason="post"), True
+                return name, malformed
             policy = build_policy(load_config(config), directory)
             for event in events:
                 decision = _decide_event(event, policy)
                 if not decision.allow:
-                    return name, decision, False
-            return name, Decision(allow=True, reason="No sealed store access"), False
+                    return name, decision
+            if name == "agy" and all(
+                event.get("hook_event_name") == "PostToolUse" for event in events
+            ):
+                # Policy ran and allowed; agy's post phase expects an empty object.
+                return name, Decision(allow=True, reason="post")
+            return name, Decision(allow=True, reason="No sealed store access")
     except (ValueError, OSError, RuntimeError, ConfigError) as exc:
         reason = f"Guard cannot validate event: {exc}"
-        return name, Decision(allow=False, reason=reason), False
-    return name, Decision(allow=True, reason="No config"), False
+        return name, Decision(allow=False, reason=reason)
+    return name, Decision(allow=True, reason="No config")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -110,10 +115,9 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, OSError, RecursionError) as exc:
         harness = args.harness or detect_harness({}, os.environ)
         decision = Decision(allow=False, reason=f"Guard cannot validate event: {exc}")
-        is_post = False
     else:
-        harness, decision, is_post = _evaluate(args.harness, raw)
-    if is_post:
+        harness, decision = _evaluate(args.harness, raw)
+    if decision.allow and decision.reason == "post":
         sys.stdout.write(format_post_ack(harness))
         return 0
     stdout, stderr, code = format_decision(harness, decision.allow, decision.reason)

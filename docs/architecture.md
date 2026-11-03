@@ -7,7 +7,7 @@ This document describes the components of `ml-referee` v0.1 as implemented. Upda
 | Component | Path | Responsibility |
 |---|---|---|
 | Plugin manifest | `.claude-plugin/plugin.json` | Declares the plugin name, version, and description. |
-| Hook registration | `hooks/hooks.json` | Registers the guard on `PreToolUse` (`Read\|Write\|Edit\|Bash\|Grep\|Glob`) and the recorder on `PostToolUse` and `PostToolUseFailure` (`Bash`). Both run `python3 -m` with `PYTHONPATH` set to the plugin `src/`. |
+| Hook registration | `hooks/hooks.json` | Registers the guard on `PreToolUse` (`Read\|Write\|Edit\|Bash\|Grep\|Glob`) and the recorder on `PostToolUse` and `PostToolUseFailure` (`Bash`). Both pass `--harness claude` and run `python3 -m` with `PYTHONPATH` set to the plugin `src/`. |
 | Config | `src/ml_referee/config.py` | Loads and validates `.ml-referee.toml`. Resolves the store path under `XDG_DATA_HOME`. |
 | Ledger | `src/ml_referee/ledger.py` | Append-only, hash-chained JSONL log under an `flock`. Kinds: `seal`, `trial`, `eval`. Stores the last hash in `head.txt`, written atomically. |
 | Seal | `src/ml_referee/seal.py` | Moves the source data into the store, writes the holdout, evaluator, and manifest, and rewrites the workspace train file with the non-holdout rows. |
@@ -17,11 +17,11 @@ This document describes the components of `ml-referee` v0.1 as implemented. Upda
 | Recorder hook | `src/ml_referee/hooks/recorder.py` | `PostToolUse` entry point. Takes `--harness NAME`. Takes the exit code and failure flag from the canonical event. Appends matching trial commands to the ledger once the project is sealed. Never blocks. |
 | Installer | `src/ml_referee/install.py` | `ml-referee install --harness NAME`. Writes or merges the hook file for each harness, tags every entry with `ml-referee`, and is idempotent. Supports `--dry-run`. Never overwrites a user's hook file. |
 | AGENTS.md block | `src/ml_referee/agents_md.py` | Writes a block between `<!-- ml-referee:start -->` and `<!-- ml-referee:end -->` that tells the agent not to touch the sealed store or the config. The installer writes it for Codex, Devin, agy, and opencode. |
-| Integrations | `integrations/opencode/ml-referee.js` | opencode plugin. Its `tool.execute.before` hook runs the guard with `--harness opencode` and throws on a deny. The installer copies it to `.opencode/plugins/`. |
+| Packaged data | `src/ml_referee/data/opencode/ml-referee.js` | opencode plugin. Its `tool.execute.before` hook runs the guard with `--harness opencode` and throws on a deny. The installer renders it with the Python path and `PYTHONPATH` directory as constants (the plugin falls back to `python3`) and writes it to `.opencode/plugins/`. It ships as package data. |
 | Evaluator runner | `src/ml_referee/runner.py` | Runs the sealed evaluator within the holdout budget. |
 | Audit | `src/ml_referee/audit/checks.py` | Deterministic leakage checks. |
 | Claim | `src/ml_referee/claim/` | Statistics (`stats.py`) and report (`report.py`). |
-| CLI | `src/ml_referee/cli.py` | `ml-referee seal`, `eval`, `audit`, `claim`, and `verify-ledger`. |
+| CLI | `src/ml_referee/cli.py` | `ml-referee seal`, `eval`, `audit`, `claim`, `verify-ledger`, and `install`. |
 | Commands, skill, agent | `commands/`, `skills/ml-referee/`, `agents/ml-reviewer.md` | Claude Code surface: `/ml-seal`, `/ml-audit`, `/ml-claim`, a workflow skill, and a read-only reviewer. |
 | Attack bench | `bench/` | Eight scripted attacks (`bench/attacks/a1_*.py` to `a8_*.py`), a shared fixture (`bench/env.py`), and `bench/run_attacks.py`. |
 

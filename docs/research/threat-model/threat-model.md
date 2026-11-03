@@ -35,11 +35,11 @@ Out of scope:
 ## Other residual risk
 
 - If `python3` is missing, a hook crash is non-blocking in Claude Code, so the guard fails open.
-- Guard coverage differs per harness. The guard checks the tools that each harness adapter maps. A tool that an adapter does not map is checked by substring scan only.
+- Guard coverage differs per harness. The guard checks the tools that each harness adapter maps. A tool that an adapter does not map is checked as an `Other` event, with every string treated as both a path and content.
 - Codex has no `Read` tool, so Codex reads go through `Bash`. A Codex agent that reads through another route is not checked by the file rules.
 - Devin and agy fail open on a hook crash or a timeout. A hook process that cannot import `ml_referee` exits with code 1, which those harnesses do not treat as a deny.
 - Codex hooks take effect only after you trust them in `/hooks`. Until then, the guard does not run.
-- Unknown tool names are scanned by substring only. They are never resolved as paths.
+- Unknown tool names become `Other` events. The guard checks every string of an `Other` event as a candidate path (config file, store) and as content, and it validates the `cwd`. Unmapped keys of mapped tools are re-scanned the same way.
 - The runner kills the evaluator process group on timeout and never includes evaluator output in errors, so a failing evaluator does not leak holdout content.
 
 ## Fail-closed rule

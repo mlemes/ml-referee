@@ -18,7 +18,7 @@ This document traces data through `ml-referee` v0.1 as implemented. Update it in
 1. The harness sends a tool call to `hooks.guard` as JSON on standard input (untrusted: the agent chose it). `--harness NAME` selects the adapter, or the guard auto-detects it.
 2. `harness.normalize` maps the payload into canonical events. It maps each harness's tool names and field keys, such as `CommandLine` to `command` for agy, and `apply_patch` to one write event per file header. Unknown tools become `Other`. A malformed payload, a missing or non-string `cwd`, or a missing field raises an error, which produces a deny.
 3. `hooks.guard.main` walks up from `cwd` to `.ml-referee.toml`, loads it, and builds a `Policy`. A malformed event or an invalid config produces a deny. No config means allow.
-4. `policy.decide` checks the string inputs of each canonical event. It denies `Write` and `Edit` of `.ml-referee.toml` and `Bash` commands that modify it. `Other` events get only the substring rules.
+4. `policy.decide` checks the string inputs of each canonical event. It denies `Write` and `Edit` of `.ml-referee.toml` and `Bash` commands that modify it. `Other` events get every string checked as a candidate path (so `.ml-referee.toml` and the store are denied) and as content, and their `cwd` is validated even when they carry no strings. For agy, the config search starts at `workspacePaths[0]` (`config_root`), never at the tool's `Cwd` argument.
 5. `Policy.substring_touches` runs the marker checks (store path, parents, `.local/share`, `XDG_DATA_HOME`, ancestors) on the unstripped text. It removes the workspace path and `.ml-referee.toml` only before the bare `ml-referee` check, and skips that removal when the store is inside the workspace. `Write` content and `Edit` `new_string` get only these substring rules.
 6. `Policy.touches_sealed` resolves shell tokens with symlink-aware paths and expands globs. A shell parse error falls back to whitespace splitting. `decide` also denies a `cwd` inside the store or at a store ancestor.
 7. `harness.format_decision` renders the result in the deny contract of the harness. Claude Code gets `permissionDecision` JSON on standard output. Codex gets exit code 2 with stderr. agy gets `{"decision":"deny","reason":"..."}`. A PostToolUse event for agy gets `{}`. Claude Code output is byte-identical to the previous release.
@@ -29,7 +29,7 @@ This document traces data through `ml-referee` v0.1 as implemented. Update it in
 
 ## Record
 
-1. Claude Code sends the finished Bash call to `hooks.recorder` (`PostToolUse` or `PostToolUseFailure`).
+1. The harness sends the finished Bash call to `hooks.recorder --harness NAME` (`PostToolUse` or `PostToolUseFailure`). The recorder normalizes the payload and takes `exit_code` and `failed` from it. For Claude Code, it reads `tool_response.exit_code`. For opencode, the plugin forwards `exit_code`.
 2. The recorder proceeds only if `manifest.json` exists in the store. It never creates the store. `recorder._segments` splits the command into segments and strips environment assignments and wrappers.
 3. `recorder.record` matches `trial_patterns` per segment. A command outside the patterns is not recorded.
 4. On a match, `ledger.Ledger.append` writes a `trial` record: command, exit code, failure flag, and the SHA-256 of the train file.

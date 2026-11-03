@@ -35,8 +35,14 @@ def apply_block(path: Path, *, dry_run: bool = False) -> Change:
         return Change(path, "create")
     text = path.read_text(encoding="utf-8")
     start = text.find(START)
-    end = text.find(END, start) if start != -1 else -1
-    if start != -1 and end != -1:
+    end = text.find(END)
+    if text.count(START) > 1 or text.count(END) > 1 or (start == -1) != (end == -1):
+        msg = f"{path} has unmatched or duplicate ml-referee markers"
+        raise ValueError(msg)
+    if start != -1 and end < start:
+        msg = f"{path} has ml-referee markers in the wrong order"
+        raise ValueError(msg)
+    if start != -1:
         tail = end + len(END)
         if text[tail : tail + 1] == "\n":
             tail += 1

@@ -11,7 +11,7 @@ import ml_referee
 from ml_referee.harness import HARNESSES
 
 OPENCODE_PLUGIN_SRC: Path = (
-    Path(__file__).resolve().parents[2] / "integrations" / "opencode" / "ml-referee.js"
+    Path(__file__).resolve().parent / "data" / "opencode" / "ml-referee.js"
 )
 
 _MARKER = "ml_referee.hooks."
@@ -44,13 +44,19 @@ def _entry(harness: str, module: str, matcher: str, python: str) -> dict[str, An
     }
 
 
-def _is_ours(entry: Any) -> bool:  # noqa: ANN401
-    if not isinstance(entry, dict):
-        return False
-    hooks = entry.get("hooks")
-    return isinstance(hooks, list) and any(
-        isinstance(h, dict) and _MARKER in str(h.get("command", "")) for h in hooks
-    )
+def _is_ours(hook: Any) -> bool:  # noqa: ANN401
+    return isinstance(hook, dict) and _MARKER in str(hook.get("command", ""))
+
+
+def _strip_ours(entry: Any) -> list[Any]:  # noqa: ANN401
+    """Drop our hooks from an entry, keeping the entry if user hooks remain."""
+    hooks = entry.get("hooks") if isinstance(entry, dict) else None
+    if not isinstance(hooks, list):
+        return [entry]
+    kept = [h for h in hooks if not _is_ours(h)]
+    if len(kept) == len(hooks):
+        return [entry]
+    return [{**entry, "hooks": kept}] if kept else []
 
 
 def _merge_events(events: dict[str, Any], harness: str, python: str) -> None:
@@ -63,7 +69,7 @@ def _merge_events(events: dict[str, Any], harness: str, python: str) -> None:
         if not isinstance(current, list):
             msg = f"Existing {name} hooks must be a JSON list"
             raise ValueError(msg)  # noqa: TRY004
-        events[name] = [e for e in current if not _is_ours(e)] + [entry]
+        events[name] = [k for e in current for k in _strip_ours(e)] + [entry]
 
 
 def _section(data: dict[str, Any], key: str) -> dict[str, Any]:
@@ -105,8 +111,19 @@ def _install_json(harness: str, root: Path, dry_run: bool, python: str) -> Chang
     return Change(target, "merge" if exists else "create")
 
 
-def _install_opencode(root: Path, dry_run: bool) -> Change:  # noqa: FBT001
-    content = OPENCODE_PLUGIN_SRC.read_text(encoding="utf-8")
+def _install_opencode(root: Path, dry_run: bool, python: str) -> Change:  # noqa: FBT001
+    src = str(Path(ml_referee.__file__).resolve().parent.parent)
+    content = (
+        OPENCODE_PLUGIN_SRC.read_text(encoding="utf-8")
+        .replace(
+            "null // ml-referee:pythonpath",
+            f"{json.dumps(src)} // ml-referee:pythonpath",
+        )
+        .replace(
+            "null // ml-referee:python\n",
+            f"{json.dumps(python)} // ml-referee:python\n",
+        )
+    )
     target = root / ".opencode" / "plugins" / "ml-referee.js"
     exists = target.exists()
     if exists and target.read_text(encoding="utf-8") == content:
@@ -134,7 +151,7 @@ def install(
     from ml_referee.agents_md import apply_block  # noqa: PLC0415 (avoids import cycle)
 
     if harness == "opencode":
-        changes = [_install_opencode(root, dry_run)]
+        changes = [_install_opencode(root, dry_run, python or sys.executable)]
     else:
         changes = [_install_json(harness, root, dry_run, python or sys.executable)]
     changes.append(apply_block(root / "AGENTS.md", dry_run=dry_run))
