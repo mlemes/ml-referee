@@ -490,3 +490,35 @@ def test_claim_against_missing_exits_one_budget_unchanged(
     assert code == 1
     assert cap.err
     assert _ledger(ws).eval_count() == 0
+
+
+def test_audit_against_two_flags_tagged_per_file(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    train = _group_ws(ws, capsys)
+    a, b = ws / "vis_a.csv", ws / "vis_b.csv"
+    train.iloc[:3].to_csv(a, index=False)
+    train.iloc[3:6].to_csv(b, index=False)
+    code = main(["audit", "--against", str(a), "--against", str(b)])
+    lines = _against_lines(capsys.readouterr().out)
+    hits_a = [x for x in lines if x["detail"].endswith("[against=vis_a.csv]")]
+    hits_b = [x for x in lines if x["detail"].endswith("[against=vis_b.csv]")]
+    assert code == 3
+    assert any(x["severity"] == "high" for x in hits_a)
+    assert any(x["severity"] == "high" for x in hits_b)
+
+
+def test_claim_against_two_flags_second_missing_exits_one_budget_unchanged(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    train = _group_ws(ws, capsys)
+    a = ws / "vis_a.csv"
+    train.iloc[:3].to_csv(a, index=False)
+    code = main(
+        ["claim", "--predictions", str(_preds(ws)),
+         "--against", str(a), "--against", str(ws / "nope.csv")]
+    )
+    cap = capsys.readouterr()
+    assert code == 1
+    assert cap.err
+    assert _ledger(ws).eval_count() == 0
