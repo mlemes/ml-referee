@@ -92,26 +92,47 @@ def _patch_events(patch: str, ctx: _Ctx) -> list[Event]:
         m = _PATCH_HEADER.match(line)
         if m:
             paths.append(m.group(1))
+    if not paths:
+        _fail("apply_patch without file headers")
     return [ctx.make("Write", {"file_path": p, "content": patch}) for p in paths]
 
 
+def _opt_str(src: Mapping[str, object], *keys: str) -> str:
+    """Return the first present key as str ("" if none); non-str values raise."""
+    found: str | None = None
+    for key in keys:
+        if key not in src:
+            continue
+        val = src[key]
+        if not isinstance(val, str):
+            _fail(f"{key} must be a string")
+        if found is None:
+            found = val
+    return found or ""
+
+
 def _file_tool(kind: str, tin: Mapping[str, object], ctx: _Ctx) -> list[Event]:
-    path = _first_str(tin, "file_path", "filePath", "path")
-    if path is None:
+    path = _opt_str(tin, "file_path", "filePath", "path")
+    if not path:
         _fail(f"{kind} without file path")
     ti: dict[str, object] = {"file_path": path}
     if kind == "Write":
-        ti["content"] = _first_str(tin, "content") or ""
+        ti["content"] = _opt_str(tin, "content")
     elif kind == "Edit":
-        ti["new_string"] = _first_str(tin, "new_string", "newString") or ""
-        ti["old_string"] = _first_str(tin, "old_string", "oldString") or ""
+        ti["new_string"] = _opt_str(tin, "new_string", "newString")
+        ti["old_string"] = _opt_str(tin, "old_string", "oldString")
     return [ctx.make(kind, ti)]
 
 
 def _search_tool(kind: str, tin: Mapping[str, object], ctx: _Ctx) -> list[Event]:
-    ti: dict[str, object] = {"pattern": _first_str(tin, "pattern") or ""}
-    path = _first_str(tin, "path")
-    if path is not None:
+    pattern = tin.get("pattern")
+    if not isinstance(pattern, str):
+        _fail(f"{kind} pattern must be a string")
+    ti: dict[str, object] = {"pattern": pattern}
+    if "path" in tin:
+        path = tin["path"]
+        if not isinstance(path, str):
+            _fail(f"{kind} path must be a string")
         ti["path"] = path
     return [ctx.make(kind, ti)]
 
@@ -147,16 +168,25 @@ def _agy_multi_edit(name: str, args: Mapping[str, object], ctx: _Ctx) -> list[Ev
     chunks = args.get("ReplacementChunks")
     if not isinstance(chunks, list):
         _fail("agy multi_replace: ReplacementChunks must be a list")
-    items = [c for c in chunks if isinstance(c, dict)]
+    if not chunks:
+        _fail("agy multi_replace: ReplacementChunks is empty")
+    items: list[Mapping[str, object]] = []
+    for c in chunks:
+        if not isinstance(c, dict):
+            _fail("agy multi_replace: chunk must be an object")
+        for key in ("ReplacementContent", "TargetContent"):
+            if not isinstance(c.get(key), str):
+                _fail(f"agy multi_replace: chunk {key} must be a string")
+        items.append(c)
     return [
         ctx.make(
             "Edit",
             {
                 "file_path": _need(name, args, "TargetFile"),
                 "new_string": "\n".join(
-                    str(c.get("ReplacementContent", "")) for c in items
+                    str(c["ReplacementContent"]) for c in items
                 ),
-                "old_string": "\n".join(str(c.get("TargetContent", "")) for c in items),
+                "old_string": "\n".join(str(c["TargetContent"]) for c in items),
             },
         ),
     ]
@@ -228,6 +258,32 @@ def _normalize_agy(raw: dict[str, object]) -> list[Event]:
     return events
 
 
+def _status(
+    harness: str,
+    raw: Mapping[str, object],
+    *,
+    post: bool,
+    post_failure: bool,
+) -> tuple[int | None, bool]:
+    exit_code: int | None = None
+    failed = False
+    if harness == "opencode":
+        code = raw.get("exit_code")
+        if isinstance(code, int) and not isinstance(code, bool):
+            exit_code = code
+            failed = code != 0
+    elif harness == "devin" and post:
+        resp = raw.get("tool_response")
+        failed = isinstance(resp, dict) and resp.get("success") is False
+    elif post_failure:
+        failed = True
+        resp = raw.get("tool_response")
+        code = resp.get("exit_code") if isinstance(resp, dict) else None
+        if isinstance(code, int) and not isinstance(code, bool):
+            exit_code = code
+    return exit_code, failed
+
+
 def normalize(harness: str, raw: dict[str, object]) -> list[Event]:
     """Convert a harness payload into canonical events (``ValueError`` if bad)."""
     if not isinstance(raw, dict):
@@ -240,22 +296,15 @@ def normalize(harness: str, raw: dict[str, object]) -> list[Event]:
     tin = raw.get("tool_input")
     if not isinstance(tool, str) or not isinstance(tin, dict):
         _fail("payload needs tool_name and tool_input")
-    post = raw.get("hook_event_name") == "PostToolUse"
+    event = raw.get("hook_event_name")
+    post_failure = event == "PostToolUseFailure"
+    post = event == "PostToolUse" or post_failure
     cwd = raw.get("cwd")
     if harness == "devin":
         cwd = os.environ.get("DEVIN_PROJECT_DIR") or str(Path.cwd())
     if not isinstance(cwd, str) or not cwd:
-        cwd = str(Path.cwd())
-    exit_code: int | None = None
-    failed = False
-    if harness == "opencode":
-        code = raw.get("exit_code")
-        if isinstance(code, int) and not isinstance(code, bool):
-            exit_code = code
-            failed = code != 0
-    elif harness == "devin" and post:
-        resp = raw.get("tool_response")
-        failed = isinstance(resp, dict) and resp.get("success") is False
+        _fail("payload needs a non-empty cwd string")
+    exit_code, failed = _status(harness, raw, post=post, post_failure=post_failure)
     ctx = _Ctx(cwd=cwd, post=post, exit_code=exit_code, failed=failed)
     return _generic(tool, tin, ctx)
 
