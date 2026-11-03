@@ -129,3 +129,11 @@ def test_hidden_probe_counts() -> None:
 def test_denial_count() -> None:
     text = '{"permissionDecision":"deny"}\nfoo\n"permissionDecision": "deny"\n{\\"decision\\": \\"deny\\"}\nallow'
     assert real.denial_count(text) == 3
+
+
+def test_container_allows_only_agent_binary_files(tmp_path: Path) -> None:
+    home = Path.home()
+    with pytest.raises(ValueError, match="Refusing"):
+        driver.container_args("x", [(home / ".codex", "/opt/agents/x", "ro")], {})
+    with pytest.raises(ValueError, match="Refusing"):
+        driver.container_args("x", [(home / ".codex" / "auth.json", "/x", "ro")], {})

@@ -2,7 +2,7 @@
 
 Builds tasks, runs a scripted agent in a container under condition C0 (no
 plugin) or C3 (ml-referee installed), and writes one ``result.json`` per run.
-Real agents are only described by ``agent_command``; this module never runs them.
+Real agents run through ``_execute_real`` (see ``real.py``); ``agent_command`` only describes them.
 """
 
 import argparse
@@ -169,9 +169,9 @@ def container_args(  # noqa: PLR0913
     for host, target, mode in mounts:
         resolved = host.resolve()
         agent_dirs = {home / ".claude", home / ".codex", home / ".gemini"}
-        binary = mode == "ro" and target.startswith("/opt/agents/")
+        binary = mode == "ro" and target.startswith("/opt/agents/") and resolved.is_file()
         in_agent_dir = any(resolved == d or d in resolved.parents for d in agent_dirs)
-        if "docker.sock" in str(host) or resolved in {home, Path("/")} or (
+        if "docker.sock" in str(resolved) or resolved in {home, Path("/")} or (
             in_agent_dir and not binary
         ):
             msg = f"Refusing to mount {host}"
@@ -348,7 +348,8 @@ def _agent_stage(  # noqa: PLR0913, PLR0917
     except subprocess.TimeoutExpired as exc:
         subprocess.run(["docker", "kill", name], check=False, capture_output=True)  # noqa: S603, S607
         out = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-        return 124, out, "host timeout"
+        err = exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        return 124, out, f"host timeout\n{err}"
     return run.returncode, run.stdout, run.stderr
 
 
@@ -385,10 +386,13 @@ def _execute_real(
             inside = ["python", "-m", "bench.baitbench.inside", "--condition", condition, "--agent", agent]
             if condition == "C3":
                 _docker("setup", [*base, *hidden], _env(), [*inside, "--stage", "setup"])
-            agent_mounts = [m for m in base if m[1] not in {"/bench-root/bench/__init__.py", "/bench-root/bench/baitbench"}]
+            agent_mounts = [m for m in base if m[1] in {"/work", "/state"}]
             if plugin.exists():
                 agent_mounts.append((plugin, real.PLUGIN_DIR, "ro"))
             code, stdout, stderr = _agent_stage(agent, condition, budget_min, agent_mounts, home, program)
+            for extra in (".claude/.credentials.json", ".codex/auth.json"):
+                if (home / extra).is_file():
+                    fragments += real.secret_fragments(home / extra)
             _save_transcript(directory, agent, stdout, stderr, fragments)
             result.exit_status = code
             result.hook_denials = real.denial_count(stdout + stderr)
