@@ -233,3 +233,50 @@ def test_main_unknown_harness_is_rejected(
     except SystemExit as exc:
         code = int(exc.code) if isinstance(exc.code, int) else 1
     assert code != 0
+
+
+def test_claude_unknown_tool_non_dict_input_allowed_without_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    payload = json.dumps(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "custom_tool",
+            "tool_input": "not-a-dict",
+            "cwd": str(bare),
+        }
+    )
+    code, out = run_main(payload, monkeypatch, capsys)
+    assert code == 0
+    assert out == ""
+
+
+def test_claude_unknown_tool_nonstandard_key_store_path_denied(
+    env: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ws, store = env
+    payload = json.dumps(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "mcp__x__y",
+            "tool_input": {"weird_key": str(store / "holdout.parquet")},
+            "cwd": str(ws),
+        }
+    )
+    _, out = run_main(payload, monkeypatch, capsys)
+    assert_deny(out)
+
+
+def test_invalid_stdin_with_devin_env_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("DEVIN_PROJECT_DIR", "/tmp")
+    code, _ = run_main("not json", monkeypatch, capsys)
+    assert code == 2

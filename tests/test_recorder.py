@@ -297,3 +297,25 @@ def test_main_harness_codex_records_without_exit_code(
     assert len(records) == 1
     assert records[0].payload["exit_code"] is None
     assert records[0].payload["failed"] is False
+
+
+@pytest.mark.parametrize(("code", "failed"), [(1, True), (0, False)])
+def test_main_claude_post_tool_use_exit_code_recorded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    code: int,
+    failed: bool,  # noqa: FBT001
+) -> None:
+    cfg, _ = _setup(tmp_path)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("DEVIN_PROJECT_DIR", raising=False)
+    os.makedirs(store_dir(cfg))
+    (store_dir(cfg) / "manifest.json").write_text("{}")
+    event = _event("python train.py", exit_code=code)
+    event["cwd"] = str(tmp_path)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(event)))
+    assert main(["--harness", "claude"]) == 0
+    records = Ledger(store_dir(cfg) / "ledger.jsonl").records()
+    assert len(records) == 1
+    assert records[0].payload["exit_code"] == code
+    assert records[0].payload["failed"] is failed
