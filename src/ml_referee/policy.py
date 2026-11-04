@@ -286,20 +286,36 @@ def _text_names_store(text: str, root: Path, cwd: Path) -> bool:
 
 def _token_in_store(token: str, root: Path, cwd: Path) -> bool:
     """Return True if a path token, or a glob expansion of it, lies in the store."""
-    pattern = token.split("=", 1)[-1]
-    if not pattern:
-        return False
+    for pattern in {token, token.split("=", 1)[-1]}:
+        if pattern and _pattern_in_store(pattern, root, cwd):
+            return True
+    return False
+
+
+def _pattern_in_store(pattern: str, root: Path, cwd: Path) -> bool:
     try:
         expanded = _expand(pattern, dict(os.environ))
         if not glob.has_magic(expanded):
             return _inside(_resolve(expanded, cwd), root)
-        for match in glob.iglob(str(cwd / expanded), recursive=True):  # noqa: PTH207
-            if _inside(Path(match).resolve(), root):
-                return True
+        # Walk the filesystem only when the static prefix can reach the store.
+        parts = expanded.split("/")
+        static = []
+        for part in parts:
+            if glob.has_magic(part):
+                break
+            static.append(part)
+        prefix = _resolve("/".join(static) or ".", cwd)
+        if _inside(prefix, root):
+            return True
+        if prefix != root and prefix not in root.parents:
+            return False
+        return any(
+            _inside(Path(match).resolve(), root)
+            for match in glob.iglob(str(cwd / expanded))  # noqa: PTH207
+        )
     except OSError:
         # A token too long to be a real path cannot name a store entry.
         return False
-    return False
 
 
 _TOKEN_SPLIT = re.compile(r"[\s;&|()<>\"'`]+")

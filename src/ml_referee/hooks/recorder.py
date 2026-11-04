@@ -19,7 +19,7 @@ _REDIRECT = re.compile(
 _WRAPPER = re.compile(
     r"^(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S*)"
     r"|(?:\S*/)?nice(?:\s+-n\s+[+-]?\d+|\s+-\d+)?"
-    r"|(?:\S*/)?env(?:\s+(?:-i|-0|--ignore-environment))*"
+    r"|(?:\S*/)?env(?:\s+(?:-i|-0|--ignore-environment|(?:-u|--unset)\s+\S+))*"
     r"|(?:\S*/)?time(?:\s+-p)?"
     r"|(?:\S*/)?(?:nohup|setsid)|exec|command"
     r"|(?:\S*/)?(?:bash|sh)\s+-[a-z]*c"
@@ -28,7 +28,8 @@ _WRAPPER = re.compile(
 _UV_VALUE_FLAGS = {
     "--with", "--with-requirements", "--python", "-p", "--directory", "--project",
     "--env-file", "--extra", "--group", "--package", "--no-group", "--only-group",
-    "--with-editable",
+    "--with-editable", "--python-preference", "--index", "--default-index",
+    "--find-links", "-f", "--config-file", "-c",
 }
 _PYTHON = re.compile(r"^python(?:\d+(?:\.\d+)*)?$")
 _PY_FLAGS = re.compile(r"^-[uBOIsSE]+$")

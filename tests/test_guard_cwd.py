@@ -403,3 +403,13 @@ def test_unparseable_event_checks_payload_cwd(
         "cwd": str(lay.store),
     }
     assert denied("claude", raw)
+
+
+def test_unrelated_globs_do_not_block(
+    lay: Layout, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for command in ("git log -S 'a*b'", "pytest -k 'test[1]'", "ls *.py", "cat /etc/host*"):
+        raw = bash_payload("claude", command, lay.other, monkeypatch)
+        assert not denied("claude", raw), command
+    raw = bash_payload("claude", "ls ../home/.local/share/ml-ref*", lay.other, monkeypatch)
+    assert denied("claude", raw)

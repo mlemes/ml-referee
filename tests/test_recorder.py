@@ -385,3 +385,9 @@ def test_trial_pattern_raw_command_still_matches(tmp_path: Path) -> None:
     cfg, ledger = _setup(tmp_path)
     cfg = dataclasses.replace(cfg, trial_patterns=("make eval*",))
     assert record(_event("make eval --jobs 4"), cfg, ledger) is not None
+
+
+def test_env_unset_wrapper_matches(tmp_path: Path) -> None:
+    cfg, ledger = _setup(tmp_path)
+    cfg = dataclasses.replace(cfg, trial_patterns=EVAL_PATTERN)
+    assert record(_event("env -u FOO python evaluate.py"), cfg, ledger) is not None
