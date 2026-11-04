@@ -68,9 +68,9 @@ def check_near_duplicates(
     standardized with the training mean and standard deviation (missing values
     take the training median). The threshold is the ``NEAR_DUP_QUANTILE``
     quantile of the training-to-training nearest-neighbour distances unless
-    you pass one in standardized units. Severity is high above ``NEAR_DUP_HIGH`` of the holdout
-    rows and medium above ``NEAR_DUP_MEDIUM`` (at least ``NEAR_DUP_MIN_ROWS``
-    rows). Each side is capped at ``NEAR_DUP_MAX_ROWS`` rows with a fixed-seed
+    you pass one in standardized units. Severity is high above
+    ``NEAR_DUP_HIGH`` of the holdout rows and medium above ``NEAR_DUP_MEDIUM``
+    (at least ``NEAR_DUP_MIN_ROWS`` rows). Each side is capped at ``NEAR_DUP_MAX_ROWS`` rows with a fixed-seed
     subsample. Output holds counts only.
     """
     columns = [
