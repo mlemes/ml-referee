@@ -108,7 +108,12 @@ def find_config(start: Path) -> Path | None:
     return None
 
 
+def store_root() -> Path:
+    """Return the directory that holds every project store (not resolved)."""
+    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(base) / "ml-referee"
+
+
 def store_dir(cfg: Config) -> Path:
     """Return the per-project data directory under XDG_DATA_HOME."""
-    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
-    return Path(base) / "ml-referee" / cfg.project_id
+    return store_root() / cfg.project_id

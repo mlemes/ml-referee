@@ -7,7 +7,7 @@ import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
-from ml_referee.config import Config, store_dir
+from ml_referee.config import Config, store_dir, store_root
 
 
 def _expand(value: str, variables: dict[str, str]) -> str:
@@ -239,3 +239,78 @@ def decide(event: dict[str, object], policy: Policy) -> Decision:  # noqa: C901,
     except (OSError, RuntimeError, ValueError):
         return denied
     return Decision(allow=True, reason="No sealed store access")
+
+
+_NO_CONFIG_DENIED = Decision(
+    allow=False, reason="Access to the ml-referee store root denied",
+)
+_STORE_TEXT = re.compile(
+    r"\.local/share/ml-referee|XDG_DATA_HOME\}?/ml-referee",
+)
+
+
+def _string_values(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for item in value.values() for s in _string_values(item)]
+    if isinstance(value, (list, tuple)):
+        return [s for item in value for s in _string_values(item)]
+    return []
+
+
+def _inside(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def _text_names_store(text: str, root: Path, cwd: Path) -> bool:
+    """Return True if literal text names the store root (also from an ancestor cwd)."""
+    markers = [str(root), str(store_root())]
+    if cwd in root.parents:
+        # Relative spelling of the store root from an ancestor cwd.
+        markers.append(str(root.relative_to(cwd)))
+    for value in (text, re.sub(r"[^A-Za-z0-9_./~$-]", "", text)):
+        if _STORE_TEXT.search(value) or any(marker in value for marker in markers):
+            return True
+    return False
+
+
+def _token_in_store(token: str, root: Path, cwd: Path) -> bool:
+    pattern = token.split("=", 1)[-1]
+    if not pattern or glob.has_magic(pattern):
+        return False
+    path = _resolve(_expand(pattern, dict(os.environ)), cwd)
+    return _inside(path, root)
+
+
+def decide_without_config(events: list[dict[str, object]]) -> Decision:
+    """Apply the config-free store-root rules to canonical events.
+
+    Deny when a resolved cwd is inside the store root (or is the XDG data
+    directory that holds it), when literal text names the store root, or when
+    a resolved path argument lies inside it. Everything else is allowed.
+    """
+    try:
+        root = store_root().resolve()
+        for event in events:
+            cwd_value = event.get("cwd")
+            if not isinstance(cwd_value, str) or not cwd_value:
+                return Decision(allow=False, reason="Malformed hook event")
+            cwd = _resolve(cwd_value, Path.cwd())
+            if _inside(cwd, root) or cwd == root.parent:
+                return _NO_CONFIG_DENIED
+            for text in _string_values(event.get("tool_input")):
+                if _text_names_store(text, root, cwd):
+                    return _NO_CONFIG_DENIED
+                candidates = [text]
+                candidates.append(re.sub(r"[^A-Za-z0-9_./~$-]", "", text))
+                for candidate in candidates:
+                    try:
+                        tokens = shlex.split(candidate, posix=True)
+                    except ValueError:
+                        tokens = candidate.split()
+                    if any(_token_in_store(t, root, cwd) for t in [candidate, *tokens]):
+                        return _NO_CONFIG_DENIED
+    except (OSError, RuntimeError, ValueError):
+        return _NO_CONFIG_DENIED
+    return Decision(allow=True, reason="No config")
