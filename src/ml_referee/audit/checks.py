@@ -6,7 +6,19 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy.spatial import cKDTree  # type: ignore[import-untyped]
 from scipy.stats import rankdata  # type: ignore[import-untyped]
+
+# Near-duplicate check: a holdout row is "near" a training row when its
+# nearest-neighbour distance, in training-standardized numeric features, is at
+# most the NEAR_DUP_QUANTILE quantile of the training-to-training
+# nearest-neighbour distances. The quantile was chosen on development seeds that
+# the experiments repository does not use.
+NEAR_DUP_QUANTILE = 0.002
+NEAR_DUP_MAX_ROWS = 20_000
+NEAR_DUP_MEDIUM = 0.01
+NEAR_DUP_HIGH = 0.05
+NEAR_DUP_MIN_ROWS = 3
 
 
 @dataclass(frozen=True)
@@ -32,6 +44,92 @@ def check_duplicates(train: pd.DataFrame, holdout_keys: pd.DataFrame) -> list[Fi
         if count
         else []
     )
+
+
+def _near_dup_rows(count: int) -> tuple[np.ndarray, bool]:
+    """Return the row positions to use and whether they are a subsample."""
+    if count <= NEAR_DUP_MAX_ROWS:
+        return np.arange(count), False
+    rng = np.random.default_rng(0)
+    chosen = rng.choice(count, size=NEAR_DUP_MAX_ROWS, replace=False)
+    return np.sort(chosen), True
+
+
+def check_near_duplicates(
+    train: pd.DataFrame,
+    holdout: pd.DataFrame,
+    label: str,
+    threshold: float | None = None,
+    group: str | None = None,
+) -> list[Finding]:
+    """Flag holdout rows that nearly duplicate a training row.
+
+    The label and the group column are ignored. Shared numeric columns are
+    standardized with the training mean and standard deviation (missing values
+    take the training median). The threshold is the ``NEAR_DUP_QUANTILE``
+    quantile of the training-to-training nearest-neighbour distances unless
+    you pass one in standardized units. Severity is high above
+    ``NEAR_DUP_HIGH`` of the holdout rows and medium above ``NEAR_DUP_MEDIUM``
+    (at least ``NEAR_DUP_MIN_ROWS`` rows). Each side is capped at
+    ``NEAR_DUP_MAX_ROWS`` rows with a fixed-seed subsample. Output holds counts
+    only.
+    """
+    columns = [
+        column
+        for column in train.columns.intersection(holdout.columns, sort=False)
+        if column not in {label, group}
+        and pd.api.types.is_numeric_dtype(train[column])
+        and pd.api.types.is_numeric_dtype(holdout[column])
+        and not pd.api.types.is_bool_dtype(train[column])
+        and not pd.api.types.is_bool_dtype(holdout[column])
+    ]
+    if not columns:
+        return [
+            Finding("near_duplicates", "info", "No shared numeric feature columns."),
+        ]
+    if len(train) < 2 or len(holdout) < 1:  # noqa: PLR2004
+        return [Finding("near_duplicates", "info", "Too few rows for this check.")]
+    train_rows, train_sampled = _near_dup_rows(len(train))
+    hold_rows, hold_sampled = _near_dup_rows(len(holdout))
+    x_all = np.array(train[columns].iloc[train_rows], dtype=float)
+    h_all = np.array(holdout[columns].iloc[hold_rows], dtype=float)
+    x_all[~np.isfinite(x_all)] = np.nan
+    h_all[~np.isfinite(h_all)] = np.nan
+    keep = np.isfinite(x_all).any(axis=0)
+    if not keep.any():
+        return [
+            Finding("near_duplicates", "info", "No shared numeric feature columns."),
+        ]
+    x_all, h_all = x_all[:, keep], h_all[:, keep]
+    median = np.nanmedian(x_all, axis=0)
+    x_all = np.where(np.isnan(x_all), median, x_all)
+    h_all = np.where(np.isnan(h_all), median, h_all)
+    mean, std = x_all.mean(axis=0), x_all.std(axis=0)
+    std = np.where(std > 0, std, 1.0)
+    x = (x_all - mean) / std
+    h = (h_all - mean) / std
+    tree = cKDTree(x)
+    if threshold is None:
+        within_train = tree.query(x, k=2, workers=-1)[0][:, 1]
+        # Exact repeats inside training (distance 0) must not pull the threshold to 0.
+        positive = within_train[within_train > 0]
+        threshold = (
+            float(np.quantile(positive, NEAR_DUP_QUANTILE)) if positive.size else 0.0
+        )
+    nearest = tree.query(h, k=1, workers=-1)[0]
+    flagged = int((nearest <= threshold).sum())
+    fraction = flagged / len(h)
+    if flagged < NEAR_DUP_MIN_ROWS or fraction <= NEAR_DUP_MEDIUM:
+        return []
+    note = " (rows subsampled)" if train_sampled or hold_sampled else ""
+    return [
+        Finding(
+            "near_duplicates",
+            "high" if fraction > NEAR_DUP_HIGH else "medium",
+            f"{flagged} of {len(h)} holdout rows ({fraction:.1%}) have a near "
+            f"duplicate in training{note}.",
+        ),
+    ]
 
 
 def check_entity_overlap(

@@ -5,6 +5,7 @@ from ml_referee.audit.checks import (
     check_duplicates,
     check_entity_overlap,
     check_fit_on_full,
+    check_near_duplicates,
     check_target_leak,
 )
 
@@ -13,5 +14,6 @@ __all__ = [
     "check_duplicates",
     "check_entity_overlap",
     "check_fit_on_full",
+    "check_near_duplicates",
     "check_target_leak",
 ]

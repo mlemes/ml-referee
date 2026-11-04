@@ -19,7 +19,7 @@ This document describes the components of `ml-referee` v0.1 as implemented. Upda
 | AGENTS.md block | `src/ml_referee/agents_md.py` | Writes a block between `<!-- ml-referee:start -->` and `<!-- ml-referee:end -->` that tells the agent not to touch the sealed store or the config. The installer writes it for Codex, Devin, agy, and opencode. |
 | Packaged data | `src/ml_referee/data/opencode/ml-referee.js` | opencode plugin. Its `tool.execute.before` hook runs the guard with `--harness opencode` and throws on a deny. The installer renders it with the Python path and `PYTHONPATH` directory as constants (the plugin falls back to `python3`) and writes it to `.opencode/plugins/`. It ships as package data. |
 | Evaluator runner | `src/ml_referee/runner.py` | Runs the sealed evaluator within the holdout budget. |
-| Audit | `src/ml_referee/audit/checks.py` | Deterministic leakage checks. |
+| Audit | `src/ml_referee/audit/checks.py` | Deterministic leakage checks: exact duplicates, near duplicates (nearest-neighbor distance on standardized numeric features, `scipy.spatial.cKDTree`), entity overlap, target leak, and fit before split. |
 | Claim | `src/ml_referee/claim/` | Statistics (`stats.py`) and report (`report.py`). |
 | CLI | `src/ml_referee/cli.py` | `ml-referee seal` (optionally `--holdout-file` to seal an existing hidden split), `eval`, `audit` and `claim` (both accept repeatable `--against` files), `verify-ledger`, and `install`. |
 | Commands, skill, agent | `commands/`, `skills/ml-referee/`, `agents/ml-reviewer.md` | Claude Code surface: `/ml-seal`, `/ml-audit`, `/ml-claim`, a workflow skill, and a read-only reviewer. |
@@ -72,7 +72,8 @@ Each record holds the hash of its predecessor. `head.txt` holds the last hash, s
 
 ## CLI behavior
 
-- `audit` duplicate detection ignores the label column.
+- `audit` duplicate and near-duplicate detection ignore the label column.
+- `check_near_duplicates` standardizes the shared numeric columns with the training mean and standard deviation, fills missing values with the training median, and flags holdout rows whose nearest training row is at most the 0.2th percentile of the training-to-training nearest-neighbor distances (`NEAR_DUP_QUANTILE`). It reports medium above 1 percent of the holdout rows and high above 5 percent (at least 3 rows), and it prints counts only. It caps each side at 20,000 rows with a fixed-seed subsample. The quantile came from development seeds that the experiments repository does not use. A near duplicate whose distance exceeds that threshold, such as a copy with large noise in a dense region, stays undetected.
 - `audit` and `claim` counts reveal holdout membership to an agent that can run the CLI. This is an accepted residual.
 - `claim` validates `--out` before it spends the budget. The path must not be a directory, must be writable, and must be outside the store.
 - For non-binary labels, the target-leak check uses Spearman rank correlation.

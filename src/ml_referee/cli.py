@@ -14,6 +14,7 @@ from ml_referee.audit import (
     check_duplicates,
     check_entity_overlap,
     check_fit_on_full,
+    check_near_duplicates,
     check_target_leak,
 )
 from ml_referee.claim import claim
@@ -73,11 +74,13 @@ def _audit(
             *check_entity_overlap(
                 train, frame.drop(columns=[cfg.label], errors="ignore"), cfg.group,
             ),
+            *check_near_duplicates(train, frame, cfg.label, group=cfg.group),
         )
     ]
     return [
         *check_duplicates(train, holdout.drop(columns=[cfg.label], errors="ignore")),
         *check_entity_overlap(train, holdout, cfg.group),
+        *check_near_duplicates(train, holdout, cfg.label, group=cfg.group),
         *check_target_leak(train, cfg.label),
         *check_fit_on_full(sources),
         *tagged,
