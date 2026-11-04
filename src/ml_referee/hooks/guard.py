@@ -154,12 +154,14 @@ def _evaluate(  # noqa: PLR0911, C901
             if found is not None:
                 return name, malformed
             # Unparseable without a config: deny only if it names the store.
+            strings = _strings(raw)
             events = [
                 {
                     "tool_name": "Other",
-                    "tool_input": {"strings": _strings(raw)},
-                    "cwd": roots[0],
-                },
+                    "tool_input": {"strings": strings},
+                    "cwd": root,
+                }
+                for root in roots
             ]
         if not events:
             return name, malformed
@@ -167,6 +169,11 @@ def _evaluate(  # noqa: PLR0911, C901
             return name, _finish(name, events, decide_without_config(events))
         config, directory = found
         policy = build_policy(load_config(config), directory)
+        # A config only protects its own store; the store-root rules also
+        # cover every other project store (for example behind a decoy config).
+        extra = decide_without_config(events)
+        if not extra.allow:
+            return name, extra
         for event in events:
             decision = _decide_event(event, policy)
             if not decision.allow:

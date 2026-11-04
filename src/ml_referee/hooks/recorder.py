@@ -13,12 +13,16 @@ from ml_referee.config import Config, find_config, load_config, store_dir
 from ml_referee.harness import HARNESSES, detect_harness, normalize
 from ml_referee.ledger import Ledger, Record
 
-_REDIRECT = re.compile(r"(?:\d*|&)(?:>{1,2}|<)\s*&?\s*[^\s;&|]+")
+_REDIRECT = re.compile(
+    r"(?:(?<=\s)|^)(?:\d*|&)(?:>{1,2}|<{1,3})\s*&?\s*[^\s;&|'\")]+",
+)
 _WRAPPER = re.compile(
     r"^(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S*)"
-    r"|nice(?:\s+-n\s+[+-]?\d+)?"
-    r"|env(?:\s+(?:-i|-0|--ignore-environment))*"
-    r"|nohup|time|setsid|exec|command|(?:bash|sh)\s+-c"
+    r"|(?:\S*/)?nice(?:\s+-n\s+[+-]?\d+|\s+-\d+)?"
+    r"|(?:\S*/)?env(?:\s+(?:-i|-0|--ignore-environment))*"
+    r"|(?:\S*/)?time(?:\s+-p)?"
+    r"|(?:\S*/)?(?:nohup|setsid)|exec|command"
+    r"|(?:\S*/)?(?:bash|sh)\s+-[a-z]*c"
     r"|(?:poetry|pipenv)\s+run|uv\s+run)(?:\s+|$)",
 )
 _UV_VALUE_FLAGS = {
@@ -27,7 +31,7 @@ _UV_VALUE_FLAGS = {
     "--with-editable",
 }
 _PYTHON = re.compile(r"^python(?:\d+(?:\.\d+)*)?$")
-_PY_FLAGS = {"-u", "-B", "-O", "-OO", "-I", "-s", "-S", "-E"}
+_PY_FLAGS = re.compile(r"^-[uBOIsSE]+$")
 
 
 def _drop_uv_flags(segment: str, before: str) -> str:
@@ -37,6 +41,8 @@ def _drop_uv_flags(segment: str, before: str) -> str:
     tokens = segment.split()
     while tokens and tokens[0].startswith("-"):
         flag = tokens.pop(0)
+        if flag == "--":
+            break
         if flag in _UV_VALUE_FLAGS and tokens and "=" not in flag:
             tokens.pop(0)
     return " ".join(tokens)
@@ -51,9 +57,17 @@ def _reduce_interpreter(segment: str) -> str:
     if not _PYTHON.match(base):
         return segment
     rest = tokens[1:]
-    while rest and rest[0] in _PY_FLAGS:
+    while rest and _PY_FLAGS.match(rest[0]):
         rest.pop(0)
     return " ".join(["python", *rest])
+
+
+def _unquote(segment: str) -> str:
+    """Remove one pair of matching outer quotes, or unbalanced edge quotes."""
+    if len(segment) > 1 and segment[0] == segment[-1] and segment[0] in "'\"":
+        return segment[1:-1]
+    quotes = segment.count("'") + segment.count('"')
+    return segment.strip("'\"") if quotes == 1 else segment
 
 
 def _segments(command: str) -> list[str]:
@@ -68,14 +82,15 @@ def _segments(command: str) -> list[str]:
     command = _REDIRECT.sub(" ", command)
     # shortcut: separators inside quotes also split; use shell parsing if needed.
     for raw_segment in re.split(r";|&&|\|\||\||&|\n", command):
-        segment = " ".join(raw_segment.split()).strip("'\"").lstrip("({ ").rstrip(") ")
+        segment = _unquote(" ".join(raw_segment.split()))
+        segment = segment.lstrip("({ ").rstrip("}) ")
         while segment:
             match = _WRAPPER.match(segment)
             if match is None:
                 break
-            stripped = _drop_uv_flags(segment[match.end():], match.group(0)).strip(
-                "'\"",
-            )
+            stripped = _unquote(
+                _drop_uv_flags(segment[match.end():], match.group(0)),
+            ).lstrip("({ ")
             if stripped == segment:
                 break
             segment = stripped

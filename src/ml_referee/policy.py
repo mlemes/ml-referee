@@ -263,6 +263,11 @@ def _inside(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
 
 
+def _squash(text: str) -> str:
+    """Collapse repeated slashes and ``/./`` segments in literal text."""
+    return re.sub(r"/(?:\.?/)+", "/", text)
+
+
 def _text_names_store(text: str, root: Path, cwd: Path) -> bool:
     """Return True if literal text names the store root (also from an ancestor cwd)."""
     markers = [str(root), str(store_root())]
@@ -270,17 +275,34 @@ def _text_names_store(text: str, root: Path, cwd: Path) -> bool:
         # Relative spelling of the store root from an ancestor cwd.
         markers.append(str(root.relative_to(cwd)))
     for value in (text, re.sub(r"[^A-Za-z0-9_./~$-]", "", text)):
-        if _STORE_TEXT.search(value) or any(marker in value for marker in markers):
+        squashed = _squash(value)
+        if any(
+            _STORE_TEXT.search(item) or any(marker in item for marker in markers)
+            for item in (value, squashed)
+        ):
             return True
     return False
 
 
 def _token_in_store(token: str, root: Path, cwd: Path) -> bool:
+    """Return True if a path token, or a glob expansion of it, lies in the store."""
     pattern = token.split("=", 1)[-1]
-    if not pattern or glob.has_magic(pattern):
+    if not pattern:
         return False
-    path = _resolve(_expand(pattern, dict(os.environ)), cwd)
-    return _inside(path, root)
+    try:
+        expanded = _expand(pattern, dict(os.environ))
+        if not glob.has_magic(expanded):
+            return _inside(_resolve(expanded, cwd), root)
+        for match in glob.iglob(str(cwd / expanded), recursive=True):  # noqa: PTH207
+            if _inside(Path(match).resolve(), root):
+                return True
+    except OSError:
+        # A token too long to be a real path cannot name a store entry.
+        return False
+    return False
+
+
+_TOKEN_SPLIT = re.compile(r"[\s;&|()<>\"'`]+")
 
 
 def decide_without_config(events: list[dict[str, object]]) -> Decision:
@@ -302,14 +324,13 @@ def decide_without_config(events: list[dict[str, object]]) -> Decision:
             for text in _string_values(event.get("tool_input")):
                 if _text_names_store(text, root, cwd):
                     return _NO_CONFIG_DENIED
-                candidates = [text]
-                candidates.append(re.sub(r"[^A-Za-z0-9_./~$-]", "", text))
-                for candidate in candidates:
+                for candidate in (text, re.sub(r"[^A-Za-z0-9_./~$-]", "", text)):
                     try:
                         tokens = shlex.split(candidate, posix=True)
                     except ValueError:
                         tokens = candidate.split()
-                    if any(_token_in_store(t, root, cwd) for t in [candidate, *tokens]):
+                    tokens.extend(_TOKEN_SPLIT.split(candidate))
+                    if any(_token_in_store(t, root, cwd) for t in tokens):
                         return _NO_CONFIG_DENIED
     except (OSError, RuntimeError, ValueError):
         return _NO_CONFIG_DENIED

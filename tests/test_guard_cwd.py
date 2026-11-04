@@ -332,3 +332,74 @@ def test_main_denies_cwd_in_store(
     assert main() == 0
     data = json.loads(capsys.readouterr().out)
     assert data["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex", "opencode"])
+def test_spelling_variants_inside_subshell_denied(
+    lay: Layout, monkeypatch: pytest.MonkeyPatch, harness: str,
+) -> None:
+    for command in (
+        'bash -c "cat ~/.local/share//ml-referee/proj1/holdout.parquet"',
+        "sh -c 'cat ~/.local/./share/ml-referee/proj1/holdout.parquet'",
+        'bash -c "cd ~/.local//share/ml-referee;cat proj1/holdout.parquet"',
+        "(cat ~/.local/share/ml-referee/proj1/evaluator.py)",
+    ):
+        raw = bash_payload(harness, command, lay.other, monkeypatch, lay.other)
+        assert denied(harness, raw), command
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex", "opencode"])
+def test_glob_into_store_denied(
+    lay: Layout, monkeypatch: pytest.MonkeyPatch, harness: str,
+) -> None:
+    for command in (
+        "cat ~/.local/share/ml-refere*/*/hold*",
+        "cat ../home/.local/share/ml-ref*/proj1/*",
+        "cat $HOME/.local/sh*/ml-r*/proj1/evaluator.py",
+    ):
+        raw = bash_payload(harness, command, lay.other, monkeypatch, lay.other)
+        assert denied(harness, raw), command
+
+
+def test_decoy_config_does_not_unlock_other_stores(
+    lay: Layout, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decoy = lay.other / "decoy"
+    decoy.mkdir()
+    (decoy / ".ml-referee.toml").write_text(TOML.replace("proj1", "decoy"))
+    for command, cwd in (
+        (f"cat {lay.store}/holdout.parquet", decoy),
+        ("ls", lay.store),
+        ("cat ../../home/.local/share/ml-referee/proj1/manifest.json", decoy),
+    ):
+        raw = bash_payload("claude", command, cwd, monkeypatch)
+        assert denied("claude", raw), command
+    raw = bash_payload("claude", "python evaluate.py", decoy, monkeypatch)
+    assert not denied("claude", raw)
+
+
+def test_long_benign_strings_not_blocked(
+    lay: Layout, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    blob = "A" * 6000
+    raw = bash_payload("claude", f"echo {blob}", lay.other, monkeypatch)
+    assert not denied("claude", raw)
+    write: dict[str, object] = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(lay.other / "a.txt"), "content": blob},
+        "cwd": str(lay.other),
+    }
+    assert not denied("claude", write)
+
+
+def test_unparseable_event_checks_payload_cwd(
+    lay: Layout, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(lay.other))
+    raw = {
+        "tool_name": "Bash",
+        "tool_input": {"command": 7},
+        "cwd": str(lay.store),
+    }
+    assert denied("claude", raw)

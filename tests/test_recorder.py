@@ -341,6 +341,12 @@ EVAL_PATTERN = ("python evaluate.py*",)
         "(cd /work && ./.venv/bin/python evaluate.py)",
         "python evaluate.py\npython other.py",
         "make data || .venv/bin/python3.11 evaluate.py",
+        'bash -lc "python evaluate.py > out.log"',
+        "/usr/bin/env python3 evaluate.py",
+        "/usr/bin/time -p python evaluate.py",
+        "uv run -- python evaluate.py",
+        "{ python -uB evaluate.py; }",
+        'python evaluate.py --cfg "a b.yaml" < in.txt',
     ],
 )
 def test_trial_pattern_matches_normalized_command(
