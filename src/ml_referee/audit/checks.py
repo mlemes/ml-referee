@@ -70,8 +70,9 @@ def check_near_duplicates(
     quantile of the training-to-training nearest-neighbour distances unless
     you pass one in standardized units. Severity is high above
     ``NEAR_DUP_HIGH`` of the holdout rows and medium above ``NEAR_DUP_MEDIUM``
-    (at least ``NEAR_DUP_MIN_ROWS`` rows). Each side is capped at ``NEAR_DUP_MAX_ROWS`` rows with a fixed-seed
-    subsample. Output holds counts only.
+    (at least ``NEAR_DUP_MIN_ROWS`` rows). Each side is capped at
+    ``NEAR_DUP_MAX_ROWS`` rows with a fixed-seed subsample. Output holds counts
+    only.
     """
     columns = [
         column
