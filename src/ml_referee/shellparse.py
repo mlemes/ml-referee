@@ -141,3 +141,127 @@ def split_commands(line: str) -> list[Command] | None:
     if "\\\n" in line or re.search(r"\(\s*\)", line):
         return None
     return _Lexer(line).run()
+
+
+_DATA_SINKS = frozenset({"cat", "tee"})
+_HEREDOC_DELIM = re.compile(r"""<<(?:'(\w+)'|"(\w+)")""")
+_AFTER_OPERATOR = frozenset("|;&()`<")
+# Anything that can change what ``cat`` or ``tee`` means, or what runs next.
+_REDEFINES = re.compile(
+    r"(?<![\w.-])(?:alias|function|eval|source|builtin|enable|trap|coproc|hash"
+    r"|command|exec|PATH|BASH_ENV|ENV|shopt)(?![\w-])|(?<!\S)\.(?!\S)|\b(?:cat|tee)\s*\(",
+)
+
+
+def _unquoted_heredoc(line: str) -> re.Match[str] | None:
+    """Return the one quoted-delimiter ``<<'WORD'`` outside quotes, or None.
+
+    None also covers every spelling the scanner does not model: a second
+    heredoc, ``<<-``, ``<<<``, an unbalanced quote, a comment, a backslash, or
+    a substitution before the operator.
+    """
+    quote = ""
+    found: re.Match[str] | None = None
+    pos = 0
+    while pos < len(line):
+        char = line[pos]
+        if quote:
+            if char == quote:
+                quote = ""
+            elif quote == '"' and char in "\\`$":
+                return None
+        elif char in "'\"":
+            quote = char
+        elif char in "\\`#" or line.startswith("$(", pos):
+            return None
+        elif line.startswith("<<", pos):
+            if found is not None or line.startswith(("<<<", "<<-"), pos):
+                return None
+            found = _HEREDOC_DELIM.match(line, pos)
+            if found is None:
+                return None
+            pos = found.end()
+            continue
+        pos += 1
+    return None if quote else found
+
+
+def _balanced(line: str) -> bool:
+    """Return True if quotes close on ``line`` and nothing reads past its end."""
+    quote = ""
+    pos = 0
+    while pos < len(line):
+        char = line[pos]
+        if char == "\\" and quote != "'":
+            if pos + 1 >= len(line):
+                return False
+            pos += 2
+            continue
+        if char == "`" or line.startswith("$(", pos):
+            return False
+        if quote:
+            quote = "" if char == quote else quote
+        elif char in "'\"":
+            quote = char
+        elif char == "$" and line[pos + 1 : pos + 2] in {"'", '"'}:
+            return False
+        pos += 1
+    return not quote
+
+
+def split_heredocs(text: str) -> tuple[str, list[str]] | None:  # noqa: PLR0911
+    """Cut inert ``cat``/``tee`` here-document bodies out of ``text``.
+
+    Return ``(shell, bodies)``: ``shell`` is ``text`` without each heredoc
+    operator, body, and terminator line; ``bodies`` holds the body texts. A body
+    is inert only when the delimiter is quoted (no expansion), the operator sits
+    outside quotes, the consumer is ``cat`` or ``tee`` whose output does not
+    feed a pipe or a substitution, and the terminator line exists. Return None
+    when there is no heredoc or any of that is uncertain, so the caller keeps
+    judging the whole text with its strictest rules.
+    """
+    lines = text.split("\n")
+    shell: list[str] = []
+    bodies: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        index += 1
+        if "<<" not in line:
+            if (
+                not _balanced(line)
+                or _REDEFINES.search(line)
+                or any(char in line for char in "(){}")
+            ):
+                return None
+            shell.append(line)
+            continue
+        if _REDEFINES.search(line) or any(char in line for char in "(){}"):
+            return None
+        match = _unquoted_heredoc(line)
+        if match is None:
+            return None
+        prefix, rest = line[: match.start()], line[match.end() :]
+        commands = split_commands(prefix)
+        if (
+            not commands
+            or commands[-1].words[:1] == ()
+            or commands[-1].words[0] not in _DATA_SINKS
+            or prefix.rstrip()[-1:] in _AFTER_OPERATOR
+            or any(char in rest for char in "|`(<")
+            or "$(" in rest
+        ):
+            return None
+        delimiter = match[1] or match[2]
+        body: list[str] = []
+        while index < len(lines) and lines[index] != delimiter:
+            body.append(lines[index])
+            index += 1
+        if index >= len(lines):
+            return None
+        index += 1
+        bodies.append("\n".join(body))
+        shell.append(prefix + rest)
+    if not bodies:
+        return None
+    return "\n".join(shell), bodies
