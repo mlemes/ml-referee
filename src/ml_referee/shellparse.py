@@ -137,4 +137,7 @@ def split_commands(line: str) -> list[Command] | None:
     Redirections are returned per command with their targets unquoted. Return
     None when the line holds a construct the lexer does not model.
     """
+    # A line continuation inside quotes, or ``name()``, changes how words join.
+    if "\\\n" in line or re.search(r"\(\s*\)", line):
+        return None
     return _Lexer(line).run()

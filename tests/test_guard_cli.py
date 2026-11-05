@@ -213,6 +213,27 @@ def mirror(lay: Lay) -> list[str]:
         "cd && ml-referee audit --against .local/share/m*/p*/h*",
         "pushd /tmp && ml-referee audit",
         "CDPATH=/x; cd y && ml-referee audit",
+        # review round 1: continuations, quoting, tilde, braces, shell state
+        "ml-referee verify-ledger > \".ml-referee\\\n.toml\"",
+        "ml-referee verify-ledger > $\\\n'\\x2eml'",
+        "rm \".ml-referee\".toml; ml-referee --help",
+        "rm .ml-referee\\.toml; ml-referee --help",
+        "cat ~/.local/share/ml-\\\nreferee/*/*; ml-referee --help",
+        "rm ~+/.ml-referee*; ml-referee --help",
+        "cat ~-/x; ml-referee --help",
+        "cat() { rm \"$@\"; }; cat .ml-referee.toml; ml-referee --help",
+        "function cat { rm \"$@\"; }; cat .ml-referee.toml; ml-referee --help",
+        "shopt -s dotglob; rm *toml; ml-referee --help",
+        "GLOBIGNORE=. rm *toml; ml-referee --help",
+        "export GLOBIGNORE=.; rm *toml; ml-referee --help",
+        "export PYTHONPATH=/tmp/evil; ml-referee verify-ledger",
+        "export HOME=/tmp; cd; ml-referee verify-ledger",
+        "alias cat=rm; cat .ml-referee.toml; ml-referee --help",
+        "ml-referee verify-ledger > .ml-referee.tom{l..l}",
+        "ml-referee verify-ledger > {a,b}",
+        "builtin cd ..; ml-referee --help",
+        "command cd ..; ml-referee --help",
+        "cd ..; builtin cd ..; ml-referee --help",
         # subcommands and flags outside the agent set
         "ml-referee seal --evaluator e.py",
         "ml-referee seal --evaluator e.py --holdout-file h.csv",
@@ -280,11 +301,12 @@ def test_relative_store_links_denied_from_subdirectory(
         assert not _evaluate("claude", raw)[1].allow, command
 
 
-def test_reading_the_config_in_a_compound_command_matches_the_single_form(
+def test_reading_the_config_is_allowed_alone_but_not_inside_a_cli_line(
     lay: Lay, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert verdict("claude", "cat .ml-referee.toml", lay, monkeypatch)
-    assert verdict("claude", "ml-referee audit | cat .ml-referee.toml", lay, monkeypatch)
+    # A read-only exemption is for a command typed alone, not a segment.
+    assert not verdict("claude", "ml-referee audit | cat .ml-referee.toml", lay, monkeypatch)
     assert not verdict("claude", "cat .ml-referee.toml > x", lay, monkeypatch)
 
 
@@ -301,6 +323,35 @@ def test_workspace_symlink_into_store_is_followed(
     (lay.ws / "evil").symlink_to(lay.root / "proj1")
     assert not verdict("claude", "ml-referee audit --against evil/holdout.parquet", lay, monkeypatch)
     assert not verdict("claude", "ml-referee audit > evil/out", lay, monkeypatch)
+
+
+def test_cd_to_a_store_ancestor_then_glob_is_denied_with_the_cli(
+    lay: Lay, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A glob only reaches the store from the directory a ``cd`` moved to."""
+    ancestor = lay.home if (lay.home / ".local").exists() else lay.home.parent
+    parts = lay.store.relative_to(ancestor).parts
+    glob = "/".join(f"{part[:2]}*" for part in parts)
+    assert not verdict("claude", f"ml-referee audit; cd {ancestor}; cat {glob}/ho*", lay, monkeypatch)
+    assert not verdict("claude", f"cd {ancestor} && ml-referee audit --against '{glob}/ho*'", lay, monkeypatch)
+    assert not verdict("claude", f"(cd {ancestor}) && cat {glob}/ho* | ml-referee audit", lay, monkeypatch)
+    # The same listing from the workspace matches nothing and is allowed.
+    assert verdict("claude", f"ml-referee audit; cat {glob}/ho*", lay, monkeypatch)
+
+
+def test_cd_inside_a_group_or_after_a_keyword_is_tracked(
+    lay: Lay, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ancestor = lay.home if (lay.home / ".local").exists() else lay.home.parent
+    parts = lay.store.relative_to(ancestor).parts
+    glob = "/".join(f"{part[:2]}*" for part in parts)
+    for command in (
+        f"{{ cd {ancestor}; cat {glob}/ho*; }}; ml-referee --help",
+        f"(cd {ancestor} && cat {glob}/ho*); ml-referee --help",
+        f"if cd {ancestor}; then cat {glob}/ho*; fi; ml-referee --help",
+        f"! cd {ancestor}; cat {glob}/ho*; ml-referee --help",
+    ):
+        assert not verdict("claude", command, lay, monkeypatch), command
 
 
 def test_cli_still_blocked_when_cwd_is_in_store(

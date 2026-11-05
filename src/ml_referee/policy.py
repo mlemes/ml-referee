@@ -20,7 +20,8 @@ def _expanduser(value: str) -> str:
     try:
         return str(Path(value).expanduser())
     except RuntimeError:
-        if re.match(r"~[^/]", value):
+        # ``~+`` and ``~-`` mean $PWD and $OLDPWD in the shell: keep them closed.
+        if re.match(r"~[^/+-]", value):
             return value
         raise
 
@@ -255,6 +256,7 @@ def _config_glob(value: str, policy: Policy, active: Policy) -> bool:
                 (active.cwd or active.workspace)
                 / _expand(token.split("=", 1)[-1], dict(os.environ)),
             ),
+            include_hidden=True,
         )
     )
 
@@ -283,8 +285,13 @@ _CLI_HELP = frozenset({*_CLI_FLAGS, "seal", "claim", "install"})
 _ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 _UNSAFE_ASSIGN = re.compile(
     r"(?:PATH|PYTHON\w*|LD_\w+|XDG_\w+|HOME|ML_REFEREE\w*|BASH_ENV|ENV|IFS|CDPATH"
-    r"|SHELLOPTS|PS4)=",
+    r"|GLOBIGNORE|SHELLOPTS|PS4)=",
 )
+# Builtins that can redefine commands, options, or what runs next.
+_SHELL_STATE = frozenset({
+    "shopt", "alias", "unalias", "function", "eval", "source", ".", "builtin",
+    "enable", "trap",
+})
 _DURATION = re.compile(r"\d+(?:\.\d+)?[smhd]?")
 _PYTHON = re.compile(r"python(?:\d+(?:\.\d+)*)?")
 _PY_FLAG = re.compile(r"-[uBsSEO]+")
@@ -348,7 +355,7 @@ def _cli_argv(rest: list[str]) -> list[str] | None:
 
 def _value_denied(value: str, policy: Policy, cwds: list[Path]) -> bool:
     """Return True if a CLI argument or redirect target may reach the store."""
-    if any(char in value for char in "$`"):
+    if any(char in value for char in "$`{}"):
         return True
     for cwd in cwds:
         active = Policy(policy.store, policy.workspace, cwd)
@@ -401,17 +408,20 @@ def _redirects_allowed(command: Command, policy: Policy, cwds: list[Path]) -> bo
     return True
 
 
-def _next_cwds(command: Command, cwds: list[Path]) -> list[Path] | None:
+def _next_cwds(words: list[str], cwds: list[Path]) -> list[Path] | None:
     """Add the directories a ``cd`` can reach; None when they are not static."""
-    args = command.words[1:]
-    if command.words[0] in {"pushd", "popd"} or len(args) > 1:
+    args = words[1:]
+    if words[0] in {"pushd", "popd"} or len(args) > 1:
         return None
     target = args[0] if args else "~"
     if not target or target.startswith("-") or any(c in target for c in "$`{}*?["):
         return None
-    reached = [
-        _resolve(_expand(target, dict(os.environ)), cwd) for cwd in cwds
-    ]
+    try:
+        reached = [
+            _resolve(_expand(target, dict(os.environ)), cwd) for cwd in cwds
+        ]
+    except (OSError, RuntimeError, ValueError):
+        return None
     merged = [*cwds, *(path for path in reached if path not in cwds)]
     return merged if len(merged) <= _MAX_CWDS else None
 
@@ -431,14 +441,22 @@ def _cli_verdict(  # noqa: C901, PLR0911, PLR0912
         return None
     parsed = []
     for command in commands:
+        if any(_UNSAFE_ASSIGN.match(word) for word in command.words):
+            return False
         rest = _unwrap(list(command.words))
         argv = _cli_argv(rest) if rest is not None else None
         probe = rest in (["which", "ml-referee"], ["command", "-v", "ml-referee"])
-        parsed.append((command, argv, probe))
-    if not any(argv is not None or probe for _, argv, probe in parsed):
+        if (rest or [""])[0] in _SHELL_STATE:
+            return False
+        if any(word in {"cd", "pushd", "popd"} for word in command.words) and (
+            not rest or rest[0] not in {"cd", "pushd", "popd"}
+        ):
+            return False  # a ``cd`` we cannot place in the command order
+        parsed.append((command, argv, probe, rest))
+    if not any(argv is not None or probe for _, argv, probe, _ in parsed):
         return None
     cwds = [active.cwd or active.workspace]
-    for command, argv, probe in parsed:
+    for command, argv, probe, rest in parsed:
         if not _redirects_allowed(command, policy, cwds):
             return False
         if argv is not None:
@@ -449,7 +467,8 @@ def _cli_verdict(  # noqa: C901, PLR0911, PLR0912
                 return False
             lead = command.words[: len(command.words) - len(argv)]
             if any(
-                word != "ml-referee" and _value_denied(word, policy, cwds)
+                word not in {"ml-referee", *_LEADERS}
+                and _value_denied(word, policy, cwds)
                 for word in lead
             ):
                 return False
@@ -458,10 +477,16 @@ def _cli_verdict(  # noqa: C901, PLR0911, PLR0912
         elif not probe:
             for cwd in cwds:
                 at_cwd = Policy(policy.store, policy.workspace, cwd)
-                if _bash_denied(command.text, policy, at_cwd):
+                # No read-only exemption for the config here: it applies to a
+                # command typed alone, not to a segment of a longer line.
+                if (
+                    ".ml-referee.toml" in command.text
+                    or _config_glob(command.text, policy, at_cwd)
+                    or at_cwd.touches_sealed(command.text)
+                ):
                     return False
-            if command.words and command.words[0] in {"cd", "pushd", "popd"}:
-                reached = _next_cwds(command, cwds)
+            if rest and rest[0] in {"cd", "pushd", "popd"}:
+                reached = _next_cwds(rest, cwds)
                 if reached is None:
                     return False
                 cwds = reached
