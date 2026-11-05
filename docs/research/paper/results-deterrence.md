@@ -47,10 +47,12 @@ Public and hidden medians, minimum, and maximum were computed for this revision.
 
 Per-task Fisher p (exploratory): task 01, C0 against C3 0.474, C3 against C4 0.0055, C0 against C4 0.00012; task 02, 0.474, 0.211, and 1.0; task 03, 1.0 for all.
 
-Pre-registered: the pooled two-sided Fisher tests of C0 against C3 and C3 against C4. Not pre-registered by version control: C0 against C4. Computed for this revision, exploratory: Bonferroni over three tests, the stratified exact test, the paired McNemar test, Newcombe intervals, and per-task tests.
+Pre-registered (protocol committed after the three pilot runs): the pooled two-sided Fisher tests of C0 against C3 and C3 against C4. Not pre-registered by version control: C0 against C4. Computed for this revision, exploratory: Bonferroni over three tests, the stratified exact test, the paired McNemar test, Newcombe intervals, and per-task tests.
 
 - **Stratified exact test.** The test conditions on the number of failures in each task and uses the sum over tasks of failures in the first condition as its statistic; the null distribution is the convolution of the per-task hypergeometric distributions. The two-sided p sums the probabilities of totals no more likely than the observed one.
 - **Paired test.** Every condition uses the same 30 task instances (task and seed), so each instance gives one pair. The McNemar test uses the discordant pairs. Agent sessions are independent; the pairing only removes variation between datasets.
+- **Difference intervals.** Newcombe hybrid score intervals for two independent proportions; they ignore the pairing. Values are in proportion units, first condition minus second.
+- **Task contributions.** Task 01 gives 9 of the 10 fewer C4 failures relative to C0 and 7 of the 10 relative to C3; task 02 gives the rest.
 - **Why they differ from the pooled test.** Task 03 has no failures in any condition and adds no information, and task 01 carries most of the difference. The stratified and paired tests therefore give smaller p-values. They do not make the effect less concentrated in one task.
 
 ### Feedback in C4
@@ -76,7 +78,7 @@ On task 01 the audit raised a high `entity_overlap` finding, and the first seale
 
 | Fact | Value |
 |---|---|
-| Plugin runs with at least one ledger trial | 60/60 [0.94, 1.00]; median `N` 2 in C3, 3 in C4 |
+| Plugin runs with at least one matching command in the ledger | 60/60 [0.94, 1.00]; median `N` 2 in C3, 3 in C4 (commands, not model trials) |
 | Plugin runs with a claim (sealed score) | 48/60 [0.68, 0.88]: C3 30/30, C4 18/30 |
 | Failing plugin runs whose claim shows the gap next to the public score | 23/23 [0.86, 1.00]; 3 of 26 failing plugin runs had no claim |
 | Tool calls the guard rejected | 57 in 38 of 60 runs (C3 20, C4 37) |
@@ -87,6 +89,17 @@ On task 01 the audit raised a high `entity_overlap` finding, and the first seale
 | Runs that mention `robust_test` | 0/60 |
 
 "Shows the gap" is a harness computation (`harness.c3.exposes_gap`): the sealed score matches the hidden score within 5 percent, and the sealed score is worse than the separately recorded public score by more than the threshold, or the audit has a high finding. The claim report itself does not print the public score.
+
+### Gap status and claim availability
+
+| Condition (scored runs) | Gap met, claim | Gap met, no claim | No gap, claim | No gap, no claim |
+|---|---|---|---|---|
+| Haiku C3 (30) | 18 | 0 | 12 | 0 |
+| Haiku C4 (30) | 5 | 3 | 13 | 9 |
+| Codex C3 (8) | 2 | 1 | 3 | 2 |
+| Codex C4 (9) | 0 | 1 | 3 | 5 |
+
+Computed for this revision from the per-run `result.json` files and the Codex `per_run` list. Descriptive only.
 
 ### Per run
 
