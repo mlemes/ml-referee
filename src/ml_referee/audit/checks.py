@@ -19,6 +19,18 @@ NEAR_DUP_MAX_ROWS = 20_000
 NEAR_DUP_MEDIUM = 0.01
 NEAR_DUP_HIGH = 0.05
 NEAR_DUP_MIN_ROWS = 3
+DEFAULT_TRIAL_THRESHOLD = 20
+
+# Noisy-copy check (numeric labels): a feature whose rank correlation with the
+# label is at least NOISY_COPY_RHO, with a one-sided 95% Fisher lower bound of
+# at least NOISY_COPY_LOWER, behaves like the label plus noise up to about half
+# the label's standard deviation (rho about 0.88). An honest feature with
+# R-squared 0.6 has rho about 0.76. The check flags strength; it cannot tell a
+# leak from a very strong honest feature.
+NOISY_COPY_RHO = 0.83
+NOISY_COPY_LOWER = 0.78
+FISHER_Z_95 = 1.645
+MIN_ROWS_FOR_FISHER = 4
 
 
 @dataclass(frozen=True)
@@ -157,12 +169,28 @@ def check_entity_overlap(
     return findings
 
 
+def _rho_lower_bound(rho: float, rows: int) -> float:
+    """Return the one-sided 95% Fisher lower bound of ``abs(rho)``."""
+    if rows < MIN_ROWS_FOR_FISHER:
+        return 0.0
+    clipped = min(abs(rho), 1 - 1e-12)
+    margin = FISHER_Z_95 / np.sqrt(rows - 3)
+    return float(np.tanh(np.arctanh(clipped) - margin))
+
+
 def check_target_leak(  # noqa: C901
     train: pd.DataFrame,
     label: str,
     auc_threshold: float = 0.98,
 ) -> list[Finding]:
-    """Flag features that nearly separate the label."""
+    """Flag features that nearly separate the label.
+
+    Binary labels use the feature's AUC against ``auc_threshold``. Numeric
+    labels with more than two values use the Spearman correlation against the
+    same threshold (high), plus a noisy-copy rule: ``NOISY_COPY_RHO`` with a
+    lower-bound guard flags a medium finding for a feature that tracks the label
+    with noise up to about half its standard deviation.
+    """
     if label not in train:
         return [Finding("target_leak", "info", f"Label {label!r} unavailable.")]
     target = train[label]
@@ -194,6 +222,17 @@ def check_target_leak(  # noqa: C901
                                 f"{column!r} Spearman={spearman:.6f}.",
                             ),
                         )
+                    elif (
+                        abs(spearman) >= NOISY_COPY_RHO
+                        and _rho_lower_bound(spearman, len(x)) >= NOISY_COPY_LOWER
+                    ):
+                        findings.append(
+                            Finding(
+                                "target_leak", "medium",
+                                f"{column!r} Spearman={spearman:.6f}: tracks the "
+                                "label like a noisy copy of it.",
+                            ),
+                        )
             continue
         positive = y == classes[1]
         n_positive = int(positive.sum())
@@ -211,6 +250,27 @@ def check_target_leak(  # noqa: C901
                 Finding("target_leak", "high", f"{column!r} AUC={auc:.6f}."),
             )
     return findings
+
+
+def check_trial_count(
+    trials: int, threshold: int = DEFAULT_TRIAL_THRESHOLD,
+) -> list[Finding]:
+    """Flag a trial count above ``threshold`` as a selection-bias risk.
+
+    This flags and does not prove selection: the count shows how many times
+    the agent had a chance to pick a winner, not that it picked one on the
+    public score.
+    """
+    if trials <= threshold:
+        return []
+    return [
+        Finding(
+            "many_trials", "medium",
+            f"{trials} trials recorded (threshold {threshold}): the public "
+            "score is selection-biased if the final model was chosen among "
+            "them on that score.",
+        ),
+    ]
 
 
 def _scope_nodes(node: ast.AST) -> list[ast.AST]:

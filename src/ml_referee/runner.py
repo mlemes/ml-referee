@@ -25,6 +25,7 @@ from ml_referee.seal import Manifest, load_manifest, verify_manifest
 
 EVAL_TIMEOUT_S: int = 60
 PREDICT_OUTPUT_LIMIT: int = 1000
+ROLES: frozenset[str] = frozenset({"agent", "claim"})
 
 
 class BudgetExhausted(RuntimeError):  # noqa: N818
@@ -53,8 +54,15 @@ class EvalResult:
 
 
 @contextmanager
-def _budget_lock(cfg: Config) -> Iterator[tuple[Path, Manifest, Ledger]]:
-    """Hold the eval lock with a verified store and an unspent budget."""
+def _budget_lock(cfg: Config, role: str) -> Iterator[tuple[Path, Manifest, Ledger]]:
+    """Hold the eval lock with a verified store and an unspent budget.
+
+    The ``agent`` role cannot spend the last ``cfg.claim_reserve`` evaluations;
+    only the ``claim`` role can.
+    """
+    if role not in ROLES:
+        msg = f"Unknown eval role: {role}"
+        raise ValueError(msg)
     directory = store_dir(cfg)
     _verify_store(cfg, directory)
     directory = directory.resolve(strict=True)
@@ -65,15 +73,21 @@ def _budget_lock(cfg: Config) -> Iterator[tuple[Path, Manifest, Ledger]]:
         fcntl.flock(lock, fcntl.LOCK_EX)
         manifest = _verify_store(cfg, directory)
         ledger = Ledger(directory / "ledger.jsonl")
-        if ledger.eval_count() >= cfg.holdout_budget:
+        spent = ledger.eval_count()
+        if spent >= cfg.holdout_budget:
             msg = "Holdout evaluation budget exhausted"
+            raise BudgetExhausted(msg)
+        if role == "agent" and cfg.holdout_budget - spent <= cfg.claim_reserve:
+            msg = "Remaining budget is reserved for the final claim"
             raise BudgetExhausted(msg)
         yield directory, manifest, ledger
 
 
-def run_holdout_eval(cfg: Config, predictions: Path) -> EvalResult:
-    """Run the sealed evaluator once and record it in the ledger."""
-    with _budget_lock(cfg) as (directory, manifest, ledger):
+def run_holdout_eval(
+    cfg: Config, predictions: Path, role: str = "agent",
+) -> EvalResult:
+    """Run the sealed evaluator once and record it (with ``role``) in the ledger."""
+    with _budget_lock(cfg, role) as (directory, manifest, ledger):
         try:
             predictions = predictions.resolve(strict=True)
             if not predictions.is_file() or predictions.is_relative_to(directory):
@@ -82,10 +96,12 @@ def run_holdout_eval(cfg: Config, predictions: Path) -> EvalResult:
         except (OSError, RuntimeError):
             msg = "Predictions must be a file outside sealed store"
             raise EvaluatorError(msg) from None
-        return _score(directory, manifest, ledger, predictions, {})
+        return _score(directory, manifest, ledger, predictions, {"role": role})
 
 
-def run_predict_eval(cfg: Config, predict_cmd: str) -> EvalResult:
+def run_predict_eval(
+    cfg: Config, predict_cmd: str, role: str = "agent",
+) -> EvalResult:
     """Score a predictor on the sealed rows without showing it their labels.
 
     ``predict_cmd`` holds ``{features}`` and ``{out}``. The runner writes the
@@ -103,7 +119,7 @@ def run_predict_eval(cfg: Config, predict_cmd: str) -> EvalResult:
     if not args or "{features}" not in joined or "{out}" not in joined:
         msg = "The predict command must name {features} and {out}"
         raise ValueError(msg)
-    with _budget_lock(cfg) as (directory, manifest, ledger):
+    with _budget_lock(cfg, role) as (directory, manifest, ledger):
         temp = Path(tempfile.mkdtemp(prefix="ml-referee-"))
         try:
             temp.chmod(0o700)
@@ -121,7 +137,7 @@ def run_predict_eval(cfg: Config, predict_cmd: str) -> EvalResult:
             digest = hashlib.sha256(predict_cmd.encode()).hexdigest()
             return _score(
                 directory, manifest, ledger, scored,
-                {"predict_cmd_sha256": digest},
+                {"predict_cmd_sha256": digest, "role": role},
             )
         finally:
             shutil.rmtree(temp, ignore_errors=True)

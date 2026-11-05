@@ -7,6 +7,7 @@ from ml_referee.audit.checks import (
     check_fit_on_full,
     check_near_duplicates,
     check_target_leak,
+    check_trial_count,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "check_fit_on_full",
     "check_near_duplicates",
     "check_target_leak",
+    "check_trial_count",
 ]

@@ -12,6 +12,7 @@ from ml_referee.audit.checks import (
     check_entity_overlap,
     check_fit_on_full,
     check_target_leak,
+    check_trial_count,
 )
 
 
@@ -254,3 +255,20 @@ def test_numeric_label_uncorrelated_feature_not_flagged() -> None:
     y = rng.normal(size=200)
     df = pd.DataFrame({"n": rng.normal(size=200), "y": y})
     assert check_target_leak(df, "y") == []
+
+
+def test_many_trials_flagged_medium_above_threshold() -> None:
+    out = check_trial_count(21)
+    assert [(f.check, f.severity) for f in out] == [("many_trials", "medium")]
+    assert "21" in out[0].detail
+    assert "selection-biased" in out[0].detail
+
+
+def test_many_trials_quiet_at_threshold() -> None:
+    assert check_trial_count(20) == []
+    assert check_trial_count(0) == []
+
+
+def test_many_trials_threshold_configurable() -> None:
+    assert check_trial_count(6, threshold=5)
+    assert not check_trial_count(5, threshold=5)

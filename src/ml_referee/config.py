@@ -31,6 +31,8 @@ class Config:
     workspace: Path = Path()
     predict_timeout_s: int = 600
     group_hidden: bool = False
+    claim_reserve: int = 0
+    trial_threshold: int = 20
 
 
 def load_config(path: Path) -> Config:  # noqa: C901
@@ -87,6 +89,14 @@ def load_config(path: Path) -> Config:  # noqa: C901
     if timeout < 1:
         msg = "eval.predict_timeout_s must be at least 1"
         raise ConfigError(msg)
+    reserve = value("eval", "claim_reserve", int, 1 if budget >= 2 else 0)  # noqa: PLR2004
+    if not 0 <= reserve < budget:
+        msg = "eval.claim_reserve must be at least 0 and below holdout.budget"
+        raise ConfigError(msg)
+    trial_threshold = value("audit", "trial_threshold", int, 20)
+    if trial_threshold < 1:
+        msg = "audit.trial_threshold must be at least 1"
+        raise ConfigError(msg)
     return Config(
         project_id=project_id,
         train_path=path.parent / train,
@@ -102,6 +112,8 @@ def load_config(path: Path) -> Config:  # noqa: C901
         workspace=path.parent,
         predict_timeout_s=timeout,
         group_hidden=value("data", "group_hidden", bool, False),  # noqa: FBT003
+        claim_reserve=reserve,
+        trial_threshold=trial_threshold,
     )
 
 
