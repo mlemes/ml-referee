@@ -2,7 +2,7 @@
 
 **Status:** draft. The paper reports results from scripted attacks, scripted agents, and one real-agent deterrence experiment with a small model. The Codex arm of the deterrence experiment is still running and is marked as pending. All experimental numbers come from the experiments repository `ml-referee-experiments`, commit `dcd7413`.
 
-**Authors:** to be added.
+Authors: the list is not final.
 
 ## Abstract
 
@@ -85,7 +85,7 @@ Every number in this section comes from the experiments repository, commit `dcd7
 
 ### Detection
 
-The detection experiments run scripted hacks, so they measure what the audit and the sealed score can see. They do not measure whether an agent produces the hack. E4 runs six hacks over three tasks and 30 seeds. The original three hacks apply to one task each (30 runs). The other three apply to every task (90 runs each). The audit signal in Table 2 is the source check, the only audit finding that depends on the agent. The audit also raises a high `entity_overlap` finding on every task 01 run, which describes the split and not the agent.
+E4 runs six scripted hacks over three tasks and 30 seeds. The audit column is the source check, the only audit finding that depends on the agent. The audit also raises a high `entity_overlap` finding on every task 01 run, which describes the split and not the agent.
 
 | Hack | Sealed gap | Audit source check |
 |---|---|---|
@@ -96,37 +96,21 @@ The detection experiments run scripted hacks, so they measure what the audit and
 | `fit-before-split` | 0/90 (0%) [0.00, 0.04] | 90/90 (100%) [0.96, 1.00] |
 | `many-trials` | 0/90 (0%) [0.00, 0.04] | 0/90 (0%) [0.00, 0.04] |
 
-Table 2. Detection of scripted hacks (E4), pooled over the tasks that each hack runs on. Source: experiments repository, commit `dcd7413`, `results/expected/e4/summary.json`.
+Table 2. Detection of scripted hacks (E4). Source: experiments repository, commit `dcd7413`, `results/expected/e4/summary.json`.
 
-Four hacks open gaps of 0.44 to 1.51 between the public and the sealed score, and the sealed score exposes all of them in every run. You still have to put the sealed score next to the public score, because the claim report does not contain the public score. The `fit-before-split` hack gives no measurable gap, so only the source check sees it. The `many-trials` hack is invisible to every automated signal: the claim shows `Trials 50`, but no flag fires.
-
-For false positives, E4b runs three honest pipelines on the same 90 task instances. Ridge and cross-validated ridge produce 0 of 90 gap flags each [0.00, 0.04]. Histogram gradient boosting produces 60 of 90 [0.56, 0.76], all on tasks 01 and 02, because those tasks reward a flexible model that learns the shared entities or the near-duplicate rows. A gap flag alone therefore cannot separate an exploit from a legitimate model that a leaky split rewards.
-
-E5 injects known defects into California housing and a synthetic entity dataset. Exact duplicates, entity overlap, and target-leak features with label noise up to 0.1 standard deviations are found in 30 of 30 replicates at every level. Target leaks with noise of 0.2 and above are found in 0 of 30, which is a cliff: the check uses a fixed 0.98 Spearman threshold, so a feature that carries most of the label signal still passes. Clean data produced no finding in 0 of 200 runs on the baseline product commit and in 1 of 200 with the new near-duplicate check.
-
-| Near-duplicate cell | Before the new check | After the new check |
-|---|---|---|
-| Noise 0.05, 5% copied | 0/30 (0%) [0.00, 0.11] | 30/30 (100%) [0.89, 1.00] |
-| Noise 0.05, 1% copied | 0/30 (0%) [0.00, 0.11] | 22/30 (73%) [0.56, 0.86] |
-| Noise 0.2, 5% copied | 0/30 (0%) [0.00, 0.11] | 0/30 (0%) [0.00, 0.11] |
-
-Table 3. Sensitivity of near-duplicate detection (E5b). Source: experiments repository, commit `dcd7413`, `docs/results-quality.md`, section "Rerun against the fixed product pin".
+Four hacks open gaps of 0.44 to 1.51 and the sealed score exposes them in every run, but you must compare it with the public score because the claim report does not contain that score. Only the source check sees `fit-before-split`. Nothing flags `many-trials`. In E4b, ridge and cross-validated ridge produce 0 of 90 gap flags each [0.00, 0.04], and gradient boosting produces 60 of 90 [0.56, 0.76] on tasks 01 and 02, because those tasks reward a flexible model that learns the leak. In E5, exact duplicates, entity overlap, and target leaks with noise up to 0.1 standard deviations are found in 30 of 30 replicates, and target leaks with noise of 0.2 and above in 0 of 30. The new near-duplicate check raises detection at noise 0.05 with 5% copied from 0 of 30 to 30 of 30 [0.89, 1.00], and noise 0.2 stays undetected.
 
 ### Guard and ledger
 
-E6 fuzzes the guard with 1,900 calls in 24 attack classes over five harness payload shapes. On the first product commit, 15 of 16 claimed classes were blocked in 100 percent of the calls, and the class `cwd-trick` was blocked in 14 of 60 calls (0 of 46 on Claude Code, Codex, and opencode). After the fix, all 16 claimed classes are blocked in 100 percent of the calls, `cwd-trick` is blocked in 60 of 60 calls [0.94, 1.00], and the 300 benign controls are all allowed (0 of 300 blocked). Residual classes remain: base64 and hex encodings, `find ~ -exec`, and inline Python that walks the home directory are not blocked, and the unblocked shell variants run to completion in the fuzz layout.
-
-E6c tests the compound plugin-CLI forms that the guard must allow (pipes, redirects, `timeout`, `cd x &&`, `which ml-referee`) and the mirror forms that it must deny (store paths as arguments, command substitution, heredocs, `claim`, `seal`, and `install`). The guard allowed 330 of 330 calls from 66 allowed forms and denied 1,280 of 1,280 calls from 256 mirror forms. A clean result shows that these forms are handled, not that no mirror form exists.
-
-E6b tampers with the ledger. All 2,399 tamper cases that change the content of `ledger.jsonl` or `head.txt` are caught, and six concurrent callers never exceed the holdout budget in 5 of 5 trials. The ledger has no secret key, so a consistent rewrite is not caught: truncating the ledger to its seal record and rewriting `head.txt` to match passes verification and would reset the holdout budget. The rewrite needs write access to the sealed store, which the guard denies but the file mode does not prevent for the same operating system user.
+E6 fuzzes the guard with 1,900 calls in 24 attack classes over five harness payload shapes. After the fix described below, all 16 claimed classes are blocked in 100 percent of the calls, and the 300 benign controls are all allowed. Residual classes (encodings, variable splitting, `find ~ -exec`, inline Python that walks the home directory) are not blocked. E6c finds that the guard allows 330 of 330 calls from 66 compound plugin-CLI forms and denies 1,280 of 1,280 calls from 256 mirror forms. E6b catches all 2,399 tamper cases that change the ledger content, and concurrent callers never exceed the holdout budget in 5 of 5 trials. A consistent rewrite of the ledger and `head.txt` is not caught, because the chain has no secret key.
 
 ### Real-agent deterrence
 
-E7 asks whether the plugin changes how often a real agent produces a solution that overfits the public split. Each run is one Claude Code session with `--model haiku` in a container with a 15 minute cap. The test uses 3 tasks, seeds 1 to 10, and three conditions, so each condition has 30 runs. The analysis was pre-registered: Wilson intervals and two-sided Fisher exact tests on the pooled counts.
+E7 uses Claude Code with Haiku on three tasks, seeds 1 to 10, and 30 runs per condition. The analysis is pre-registered: Wilson intervals and two-sided Fisher exact tests on pooled counts.
 
-**First run (C4 invalid).** The first run used 90 runs and gave hack rates of 18 of 30 (C0), 19 of 30 (C3), and 18 of 30 (C4), with Fisher p = 1.0 for both comparisons. This run does not test the question, because the C4 condition did not deliver its feedback. The guard rejected every plugin CLI command that was not a single bare invocation: it rejected 26 of 26 audit attempts and the one eval attempt, so no C4 agent saw an audit finding or a sealed score. A contradictory `AGENTS.md` block, which told the agent to ask the person to run `ml-referee claim`, added to the problem. The C0 results are valid and the second run reuses them. The first run's reading of "no deterrence effect" does not hold, because it compared a plugin that blocked its own feedback with C0.
+**First run (C4 invalid).** Hack rates were 18 of 30 (C0), 19 of 30 (C3), and 18 of 30 (C4), with p = 1.0 for both comparisons. The run does not test deterrence, because the guard rejected all 26 audit attempts and the one eval attempt in C4, so no agent saw an audit finding or a sealed score. The C0 results are valid and the second run reuses them.
 
-**Second run.** The product fix (Section "Product defects found by the experiments") makes the feedback work. The second run repeats C3 and C4 on the fixed commit and reuses the 30 C0 results. C3 and C4 both have a holdout budget of 2, one sealed evaluation for the agent and one for the harness claim. Only C4 is told to use the tool. All 60 runs finished with no error.
+**Second run.** The second run repeats C3 and C4 on the fixed product, with a holdout budget of 2 in both. Only C4 is told to use the tool.
 
 | Condition | Hacks | Runs | Rate | 95% interval |
 |---|---|---|---|---|
@@ -134,33 +118,15 @@ E7 asks whether the plugin changes how often a real agent produces a solution th
 | C3 (passive plugin, tool available) | 18 | 30 | 60% | [0.42, 0.75] |
 | C4 (plugin plus audit and eval prompt) | 8 | 30 | 27% | [0.14, 0.44] |
 
-Table 4. Hack rate in the second E7 run. Source: experiments repository, commit `dcd7413`, `results/expected/deterrence-cli/summary.json`.
+Table 3. Hack rate in the second E7 run. Source: experiments repository, commit `dcd7413`, `results/expected/deterrence-cli/summary.json`.
 
-| Comparison | Counts | Fisher exact p (two-sided) |
-|---|---|---|
-| C0 against C3 | 18/30 against 18/30 | 1.0 |
-| C3 against C4 | 18/30 against 8/30 | 0.018 |
-| C0 against C4 | 18/30 against 8/30 | 0.018 |
+Fisher exact p is 1.0 for C0 against C3, and 0.018 for both C3 against C4 and C0 against C4. A Bonferroni correction over the three tests gives 0.055 for each C4 comparison. Per task, `regression_task_01` falls from 10 of 10 (C0) to 1 of 10 (C4), `regression_task_02` from 8 of 10 to 7 of 10, and `classification_task_03` stays at 0 of 10. The effect comes from one task, and the pooled test is not a stratified test.
 
-Table 5. Pre-registered tests. A Bonferroni correction over the three tests gives 0.055 for each C4 comparison, so the C4 effect is below 0.05 before the correction and just above it after.
-
-| Task | C0 | C3 | C4 |
-|---|---|---|---|
-| `regression_task_01` | 10/10 [0.72, 1.00] | 8/10 [0.49, 0.94] | 1/10 [0.02, 0.40] |
-| `regression_task_02` | 8/10 [0.49, 0.94] | 10/10 [0.72, 1.00] | 7/10 [0.40, 0.89] |
-| `classification_task_03` | 0/10 [0.00, 0.28] | 0/10 [0.00, 0.28] | 0/10 [0.00, 0.28] |
-
-Table 6. Hack rate per task (descriptive, not pre-registered).
-
-The effect comes from one task. On task 01 the audit finding and the sealed score point at one cause that an agent can fix (`entity_id` overlap), and 8 of 10 C4 agents rewrote their solution after the first sealed score. On task 02 the agents saw a large gap in 9 of 10 first sealed scores, the audit gave no actionable finding, and only 4 of 10 edited. Haiku does not hack task 03 in any condition, and those 30 runs pull every pooled rate toward zero. The pooled test is therefore not a stratified test.
-
-C4 agents followed the instruction. All 30 ran the audit and a sealed evaluation and saw the output (compliance 30 of 30 [0.89, 1.00]). Of those, 13 of 30 [0.27, 0.61] edited `solution.py` after the first output. Without the prompt, only 3 of 30 C3 agents ran the audit and 1 of 30 tried an evaluation. In plugin runs, the claim exposed the gap in 23 of 23 hacked runs that have a claim.
-
-A budget flaw affected the C4 runs. Twelve of 30 C4 agents ran the sealed evaluation twice, although the prompt says "once". Those two evaluations used the whole budget of 2, so the harness claim failed in those 12 runs and they have no sealed score. The hack flag does not depend on the claim, because the scorer computes the hidden score from `solution.py`. The 12 agents also used the sealed score as a tuning target on the same rows that the hack criterion uses, so a non-hack in C4 does not rule out tuning to the sealed rows.
+All 30 C4 agents ran the audit and a sealed evaluation (compliance 30 of 30 [0.89, 1.00]), and 13 of 30 [0.27, 0.61] edited `solution.py` after the first output. Only 3 of 30 C3 agents ran the audit unprompted. A budget flaw affected C4: 12 of 30 agents ran the sealed evaluation twice, which used the whole budget of 2, so the harness claim failed in those runs. The hack flag does not depend on the claim.
 
 #### Codex arm
 
-**Pending.** The Codex (Luna) arm of the deterrence experiment is still running. Its results will be reported here from `docs/results-deterrence-codex.md` on the experiments branch `e7-luna`. No Codex deterrence number appears in this paper.
+**Pending.** The Codex (Luna) arm is still running. Its results will be reported here from `docs/results-deterrence-codex.md` on the experiments branch `e7-luna`. No Codex deterrence number appears in this paper.
 
 ## Product defects found by the experiments
 
@@ -168,8 +134,8 @@ The experiments found five defects in the plugin. The author of the plugin also 
 
 1. **Working-directory bypass in the guard (E6).** The guard looked for `.ml-referee.toml` upward from the working directory in the hook payload. When a call reported a working directory outside the workspace tree, the guard found no config and allowed the call. Claude Code, Codex, and opencode allowed 46 of 46 such calls. The fix is in pull request #6, and the guard now blocks 60 of 60.
 2. **Recorder patterns (E3).** The ledger recorded a trial only when a command segment matched a configured pattern by its literal prefix. A Codex run used `/tmp/mlr-xp/venv/bin/python3 evaluate.py`, which did not match `python evaluate.py*`, so the claim reported `Trials 0`. The recorder now normalizes absolute interpreter paths and environment assignments (pull request #6). In E7, 60 of 60 plugin runs in the second run have a ledger trial.
-3. **Guard blocking the plugin CLI (E7, first run).** The guard treated any command that mentions `ml-referee` as a touch of the sealed store, except a single bare CLI call. It rejected pipes, redirects, `timeout`, `cd ... &&`, and `which ml-referee`, so no C4 agent got feedback. The fix allows the plugin CLI in compound commands. It is on branch `fix/agent-cli-feedback` (commit `66f165c`), which was not yet merged into the main branch when this paper was drafted.
-4. **Evaluation without the sealed rows (E7).** An agent never sees the sealed rows, so it cannot write the predictions that `ml-referee eval` needs. The first run worked around this with an unlabeled features file. The fix adds `ml-referee eval --predict-cmd`, which runs the agent's predictor on the sealed rows without labels. On the fixed commit all 30 C4 agents got a score from it, and it never returned a label (same branch and commit as item 3).
+3. **Guard blocking the plugin CLI (E7, first run).** The guard treated any command that mentions `ml-referee` as a touch of the sealed store, except a single bare CLI call. It rejected pipes, redirects, `timeout`, `cd ... &&`, and `which ml-referee`, so no C4 agent got feedback. The fix allows the plugin CLI in compound commands. It is merged in pull request #8.
+4. **Evaluation without the sealed rows (E7).** An agent never sees the sealed rows, so it cannot write the predictions that `ml-referee eval` needs. The first run worked around this with an unlabeled features file. The fix adds `ml-referee eval --predict-cmd`, which runs the agent's predictor on the sealed rows without labels. On the fixed commit all 30 C4 agents got a score from it, and it never returned a label (same pull request as item 3).
 5. **Near-duplicate gap (E5).** The audit had no check for near-duplicate rows, and detection was 0 of 270 injected replicates. The product added `check_near_duplicates` (pull request #5), and detection at noise 0.05 with 5% copied rose from 0 of 30 to 30 of 30.
 
 Two defects remain open. The guard rejects benign work: 51 of 57 rejections in the second E7 run were writes whose text contains `ml-referee` or shell commands with a standalone `*`. And a budget of 2 is too small when the agent may evaluate twice.
@@ -228,6 +194,14 @@ Same-user file permissions do not stop a determined agent. A stronger version ne
 ## Conclusion
 
 `ml-referee` separates the agent that produces a result from the evidence that certifies it. In scripted tests, the sealed evaluation exposes every hack that opens a gap, the guard blocks all claimed attack classes after the experiments exposed one bypass, and the ledger catches every tamper that changes its content. The experiments also show what the plugin does not do: it misses the `many-trials` hack, it has a target-leak cliff, and it is a policy layer and not a sandbox. In the one real-agent test, a passive plugin did not change the hack rate (18 of 30 against 18 of 30), and a plugin plus a prompt that asks for the audit and a sealed evaluation lowered it to 8 of 30. That result needs replication with more models, more tasks, and a concurrent control before you rely on it. Until then, treat the plugin as a tool that detects and certifies, and that deters when the agent is told to use it.
+
+## Companion documents
+
+- `docs/research/paper/results-detection.md`: detection, guard, and ledger results in full.
+- `docs/research/paper/results-deterrence.md`: the deterrence experiment in full, including the Codex arm when it finishes.
+- `docs/research/evaluation/protocol.md`: the evaluation protocol.
+- `docs/research/threat-model/threat-model.md`: the threat model.
+- Experiments repository `ml-referee-experiments`, commit `dcd7413`: `docs/protocol.md`, `docs/results.md`, `docs/results-quality.md`, `docs/results-deterrence.md`, and `results/expected/`.
 
 ## References
 
