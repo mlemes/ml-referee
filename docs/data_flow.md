@@ -23,6 +23,7 @@ With `--holdout-file PATH`, `seal.seal` validates the file first (same columns a
 3a. With no config anywhere, `policy.decide_without_config` applies the store-root rules, which need no config. It denies an event whose resolved `cwd` is inside the store root `${XDG_DATA_HOME:-~/.local/share}/ml-referee/` (symlinks resolved first) or is the directory that holds it. It denies literal text that names the store root (absolute path, `.local/share/ml-referee`, `$XDG_DATA_HOME/ml-referee`, in raw and punctuation-stripped form) and any shell token or path argument that resolves inside the store root, including glob expansions. It collapses repeated slashes and `/./` before matching and splits tokens on shell punctuation and quotes, so `bash -c "cat ~/.local/share//ml-referee/x"` is caught. When a config is found, the guard runs these store-root rules in addition to the config policy, so a decoy config cannot unlock the stores of other projects. From an ancestor `cwd` such as `$HOME`, it also denies the relative spelling of the root (for example `cat .local/share/ml-referee/x`). Everything else is allowed, so a repository without the plugin config keeps working. If `normalize` cannot parse the payload and no config exists, the guard scans every payload string with the same rules. The trust boundary is the payload: the harness root and the environment are trusted, the tool arguments are not. Residual cases: shell variable splitting and base64 or hex decoding that hide the path, and a bare `ls` from an ancestor above the data directory.
 4. `policy.decide` checks the string inputs of each canonical event. It denies `Write` and `Edit` of `.ml-referee.toml` and `Bash` commands that modify it. `Other` events get every string checked as a candidate path (so `.ml-referee.toml` and the store are denied) and as content, and their `cwd` is validated even when they carry no strings. For agy, the config search starts at `workspacePaths[0]` (`config_root`), never at the tool's `Cwd` argument.
 5. `Policy.substring_touches` runs the marker checks (store path, parents, `.local/share`, `XDG_DATA_HOME`, ancestors) on the unstripped text. It removes the workspace path and `.ml-referee.toml` only before the bare `ml-referee` check, and skips that removal when the store is inside the workspace. `Write` content and `Edit` `new_string` get only these substring rules.
+5a. For a Bash command, `policy._cli_verdict` runs first. `shellparse.split_commands` splits the text into simple commands and redirections (nothing is returned for substitution, here documents, comments, `$'..'`, or an unterminated quote). `_unwrap` strips assignments and `env`, `time`, `nohup`, `timeout N`, `uv run`. A segment whose first word is `ml-referee` or `python -m ml_referee[.cli]` is the plugin CLI. Its subcommand must be `audit`, `eval`, or `verify-ledger` (or `--help`), each flag must be on that subcommand's list, and each argument must pass `_value_denied` (no `$`, backtick, or brace; not the config; `touches_sealed` false in every directory a `cd` can reach). Every redirection target of every segment passes the same check. All other segments go through the rules below one at a time (without the read-only exemption for the config). A line with a shell-state builtin, an unsafe assignment, or a misplaced `cd` is denied. A command with no CLI segment, or one the lexer cannot read, goes through the rules below as a whole.
 6. `Policy.touches_sealed` resolves shell tokens with symlink-aware paths and expands globs. A shell parse error falls back to whitespace splitting. `decide` also denies a `cwd` inside the store or at a store ancestor.
 7. `harness.format_decision` renders the result in the deny contract of the harness. Claude Code gets `permissionDecision` JSON on standard output. Codex gets exit code 2 with stderr. agy gets `{"decision":"deny","reason":"..."}`. A PostToolUse event for agy gets `{}`. Claude Code output is byte-identical to the previous release.
 
@@ -40,13 +41,24 @@ With `--holdout-file PATH`, `seal.seal` validates the file first (same columns a
 
 ## Evaluate
 
-1. `cli.eval` calls `runner.run_holdout_eval` with the predictions file (untrusted).
+1. `cli.eval` calls `runner.run_holdout_eval` with the predictions file (untrusted), or `runner.run_predict_eval` when `--predict-cmd` is given (see "Evaluate with a predict command").
 2. The runner verifies the store: `Ledger.verify`, `seal.verify_manifest`, and a check that the first ledger record matches the manifest.
 3. The runner takes an `flock` on `eval.lock`, verifies again, and refuses if the ledger holds `holdout_budget` `eval` records. A refusal prints no score.
 4. The runner resolves the predictions path. It must be a file outside the store.
 5. The runner starts `evaluator.py` in a new session with the holdout and predictions paths, a minimal environment, and a 60 second timeout. On timeout it kills the process group.
 6. The runner parses one JSON object with `value` and `n` from standard output. It checks `n` against the manifest.
 7. The runner appends an `eval` record. Errors never include evaluator output.
+
+## Evaluate with a predict command
+
+1. `cli.eval --predict-cmd CMD` passes `CMD` (untrusted text; the guard already checked it) to `runner.run_predict_eval`. A command without `{features}` and `{out}` or with bad quoting raises `ValueError` before anything else happens.
+2. `runner._budget_lock` verifies the store, takes the `flock`, and refuses when the ledger holds `holdout_budget` `eval` records. No temp file exists yet.
+3. The runner reads `holdout.parquet` (trusted), drops the label column (and the group column when `data.group_hidden` is true), and writes `features.csv` into a `0700` temp directory (trust boundary: the predictor sees this file, never the labels).
+4. `runner._run_predictor` runs `CMD` with `{features}` and `{out}` replaced, without a shell, in the workspace (`cfg.workspace`), with the `eval.predict_timeout_s` timeout (default 600 s). Its output goes to an unlinked temp file. The runner kills the process group on exit or timeout.
+5. `runner._read_predictions` reads `{out}` (untrusted CSV; a symlink or non-regular file is refused): one column, `n_holdout` rows, no missing values, finite numbers. It writes a validated copy `scored.csv`.
+6. `runner._score` runs the sealed evaluator on the copy exactly as for `--predictions`, checks `n`, and appends an `eval` record that also holds `predict_cmd_sha256`.
+7. A `finally` block removes the temp directory. A failure at steps 3 to 5, or an evaluator failure, appends no record and spends no budget.
+8. `cli` prints the metric, the score, and `n`.
 
 ## Audit
 

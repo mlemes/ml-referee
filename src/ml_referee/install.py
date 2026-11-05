@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import ml_referee
+from ml_referee.config import ConfigError, load_config
 from ml_referee.harness import HARNESSES
 
 OPENCODE_PLUGIN_SRC: Path = (
@@ -134,6 +135,17 @@ def _install_opencode(root: Path, dry_run: bool, python: str) -> Change:  # noqa
     return Change(target, "merge" if exists else "create")
 
 
+def _budget(root: Path) -> int | None:
+    """Return the holdout budget from ``root``'s config, or None when unknown."""
+    config = root / ".ml-referee.toml"
+    if not config.is_file():
+        return None
+    try:
+        return load_config(config).holdout_budget
+    except ConfigError:
+        return None
+
+
 def install(
     harness: str,
     root: Path,
@@ -154,5 +166,7 @@ def install(
         changes = [_install_opencode(root, dry_run, python or sys.executable)]
     else:
         changes = [_install_json(harness, root, dry_run, python or sys.executable)]
-    changes.append(apply_block(root / "AGENTS.md", dry_run=dry_run))
+    changes.append(
+        apply_block(root / "AGENTS.md", dry_run=dry_run, budget=_budget(root)),
+    )
     return changes

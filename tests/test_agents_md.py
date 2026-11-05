@@ -22,7 +22,58 @@ def test_render_block_markers_and_rules() -> None:
         assert word in lowered
     assert ".ml-referee.toml" in block
     assert "sealed" in lowered
-    assert "ml-referee claim" in block
+    assert "ask the person" not in lowered
+    assert "ml-referee audit" in block
+    assert "ml-referee eval --predictions" in block
+    assert "ml-referee eval --predict-cmd" in block
+    assert "{features}" in block
+    assert "ml-referee verify-ledger" in block
+    assert "holdout budget" in lowered
+    assert "the person" in lowered
+    assert "`ml-referee claim`" in block
+    # Neutral: it describes what is available and never tells the agent to run it.
+    for phrase in ("you must run", "always run", "run ml-referee"):
+        assert phrase not in lowered
+    assert "\u2014" not in block
+    assert "list" in lowered
+
+
+def test_render_block_prints_the_budget_when_known() -> None:
+    assert "holdout budget for this project is 3" in render_block(budget=3)
+    assert "holdout budget for this project is 1 sealed evaluation " in render_block(budget=1)
+    assert "holdout budget for this project is" not in render_block()
+    assert render_block(budget=3) != render_block(budget=2)
+    assert render_block(budget=2) == render_block(budget=2)
+
+
+def test_apply_block_updates_the_budget_in_place(tmp_path: Path) -> None:
+    path = tmp_path / "AGENTS.md"
+    path.write_text("keep\n", encoding="utf-8")
+    assert apply_block(path, budget=2).action == "merge"
+    assert apply_block(path, budget=2).action == "unchanged"
+    assert apply_block(path, budget=3).action == "merge"
+    text = path.read_text(encoding="utf-8")
+    assert text.count(START) == 1
+    assert "holdout budget for this project is 3" in text
+    assert "holdout budget for this project is 2" not in text
+    assert text.startswith("keep\n")
+
+
+def test_install_prints_the_budget_from_the_config(tmp_path: Path) -> None:
+    (tmp_path / ".ml-referee.toml").write_text(
+        '[project]\nid = "p"\n[data]\ntrain = "t.csv"\nlabel = "y"\n'
+        '[eval]\ncommand = "c"\nmetric = "m"\nhigher_is_better = true\n'
+        "[trials]\npatterns = []\n[holdout]\nbudget = 4\n",
+        encoding="utf-8",
+    )
+    install("codex", tmp_path, python="/opt/py/bin/python")
+    assert "holdout budget for this project is 4" in (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+
+
+def test_install_ignores_an_unreadable_config(tmp_path: Path) -> None:
+    (tmp_path / ".ml-referee.toml").write_text("not = [valid", encoding="utf-8")
+    install("codex", tmp_path, python="/opt/py/bin/python")
+    assert "holdout budget for this project is" not in (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
 
 
 def test_apply_block_creates_file(tmp_path: Path) -> None:
