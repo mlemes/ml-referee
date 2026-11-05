@@ -7,27 +7,55 @@ from ml_referee.install import Change
 START = "<!-- ml-referee:start -->"
 END = "<!-- ml-referee:end -->"
 
-_BODY = """\
+_HEAD = """\
 ## ml-referee
 
 This project's holdout data is sealed by ml-referee.
 
-- Never read, copy, or reference the sealed store (holdout data, evaluator,
-  manifest, or ledger) or the `.ml-referee.toml` config, directly or through
-  shell commands, scripts, or search.
+- Never read, list, copy, or reference the sealed store (holdout data,
+  evaluator, manifest, or ledger), and never edit the `.ml-referee.toml`
+  config, directly or through shell commands, scripts, or search.
 - Do not try to work around the hooks that enforce this.
-- When a sealed evaluation is needed, ask the person to run `ml-referee claim`.
+- Commands you may run, alone or in ordinary pipelines and redirections:
+  - `ml-referee audit [--against PATH ...] [--sources PATH ...]` checks the
+    training data, the files you pass, and your sources for leakage, and
+    prints one JSON finding per line.
+  - `ml-referee eval --predictions PATH` scores a predictions file for the
+    sealed rows. You cannot see those rows, so this needs a file made by
+    someone who can.
+  - `ml-referee eval --predict-cmd "COMMAND"` runs COMMAND in the workspace
+    with `{features}` (a CSV of the sealed rows without labels) and `{out}`
+    (a one-column predictions CSV for it to write), then scores the result.
+    It prints only the score and the row count.
+  - `ml-referee verify-ledger` checks that the evaluation ledger is intact.
+- Sealed evaluations are limited by the holdout budget. A failed predict
+  command spends none; each scored evaluation spends one.
+"""
+_BUDGET = (
+    "- The holdout budget for this project is {budget} sealed "
+    "evaluation{plural} in total.\n"
+)
+_TAIL = """\
+- The person produces the final claim with `ml-referee claim`. `ml-referee seal`,
+  `ml-referee claim`, and `ml-referee install` are not for the agent.
 """
 
 
-def render_block() -> str:
+def render_block(budget: int | None = None) -> str:
     """Return the AGENTS.md block, including both markers."""
-    return f"{START}\n{_BODY}{END}\n"
+    note = (
+        _BUDGET.format(budget=budget, plural="" if budget == 1 else "s")
+        if budget is not None
+        else ""
+    )
+    return f"{START}\n{_HEAD}{note}{_TAIL}{END}\n"
 
 
-def apply_block(path: Path, *, dry_run: bool = False) -> Change:
+def apply_block(
+    path: Path, *, dry_run: bool = False, budget: int | None = None,
+) -> Change:
     """Create or update the block in the file at path."""
-    block = render_block()
+    block = render_block(budget)
     if not path.exists():
         if not dry_run:
             path.parent.mkdir(parents=True, exist_ok=True)

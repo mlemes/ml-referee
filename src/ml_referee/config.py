@@ -28,9 +28,12 @@ class Config:
     holdout_budget: int
     holdout_fraction: float
     seed: int
+    workspace: Path = Path()
+    predict_timeout_s: int = 600
+    group_hidden: bool = False
 
 
-def load_config(path: Path) -> Config:
+def load_config(path: Path) -> Config:  # noqa: C901
     """Parse and validate the TOML config at ``path``."""
     try:
         with path.open("rb") as stream:
@@ -80,6 +83,10 @@ def load_config(path: Path) -> Config:
     if group is not None and not isinstance(group, str):
         msg = "data.group must be a string"
         raise ConfigError(msg)
+    timeout = value("eval", "predict_timeout_s", int, 600)
+    if timeout < 1:
+        msg = "eval.predict_timeout_s must be at least 1"
+        raise ConfigError(msg)
     return Config(
         project_id=project_id,
         train_path=path.parent / train,
@@ -92,6 +99,9 @@ def load_config(path: Path) -> Config:
         holdout_budget=budget,
         holdout_fraction=float(fraction),
         seed=value("holdout", "seed", int, 0),
+        workspace=path.parent,
+        predict_timeout_s=timeout,
+        group_hidden=value("data", "group_hidden", bool, False),  # noqa: FBT003
     )
 
 

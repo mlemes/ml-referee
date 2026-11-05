@@ -22,7 +22,7 @@ from ml_referee.config import Config, find_config, load_config, store_dir
 from ml_referee.harness import HARNESSES
 from ml_referee.install import install
 from ml_referee.ledger import Ledger
-from ml_referee.runner import _verify_store, run_holdout_eval
+from ml_referee.runner import _verify_store, run_holdout_eval, run_predict_eval
 from ml_referee.seal import seal
 
 
@@ -39,7 +39,11 @@ def _parser() -> argparse.ArgumentParser:
         if name == "seal":
             command.add_argument("--evaluator", type=Path, required=True)
             command.add_argument("--holdout-file", type=Path)
-        if name in {"eval", "claim"}:
+        if name == "eval":
+            source = command.add_mutually_exclusive_group(required=True)
+            source.add_argument("--predictions", type=Path)
+            source.add_argument("--predict-cmd")
+        if name == "claim":
             command.add_argument("--predictions", type=Path, required=True)
         if name == "audit":
             command.add_argument("--sources", nargs="*", type=Path, default=[])
@@ -92,7 +96,11 @@ def _run(args: argparse.Namespace, cfg: Config) -> int:  # noqa: C901, PLR0912
         manifest = seal(cfg, args.evaluator, args.holdout_file)
         sys.stdout.write(f"Sealed holdout rows: {manifest.n_holdout}\n")
     elif args.command == "eval":
-        result = run_holdout_eval(cfg, args.predictions)
+        result = (
+            run_predict_eval(cfg, args.predict_cmd)
+            if args.predict_cmd is not None
+            else run_holdout_eval(cfg, args.predictions)
+        )
         sys.stdout.write(json.dumps(asdict(result)) + "\n")
     elif args.command == "audit":
         findings = _audit(cfg, args.sources, args.against)
