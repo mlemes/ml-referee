@@ -150,7 +150,7 @@ The experiments found five defects in the plugin. The author of the plugin also 
 4. **Evaluation without the sealed rows (E7).** An agent never sees the sealed rows, so it cannot write the predictions that `ml-referee eval` needs. The first run worked around this with an unlabeled features file. The fix adds `ml-referee eval --predict-cmd`, which runs the agent's predictor on the sealed rows without labels. On the fixed commit all 30 C4 agents got a score from it, and it never returned a label (same pull request as item 3).
 5. **Near-duplicate gap (E5).** The audit had no check for near-duplicate rows, and detection was 0 of 270 injected replicates. The product added `check_near_duplicates` (pull request #5), and detection at noise 0.05 with 5% copied rose from 0 of 30 to 30 of 30.
 
-Two defects remain open. The guard rejects benign work: 51 of 57 rejections in the second E7 run were writes whose text contains `ml-referee` or shell commands with a standalone `*`. And a budget of 2 is too small when the agent may evaluate twice.
+Three further changes address the open defects and the weaknesses listed under Limitations. They are merged but not yet re-evaluated, so the numbers in this paper come from the commits before them. Pull request #11 stops the guard from rejecting benign work: inert quoted `cat` and `tee` here-document bodies, and file content that only names `ml-referee`, no longer count as store access, and a glob that cannot match a dotfile no longer matches the config. Pull request #12 reserves the last holdout evaluation for `claim`, so an agent cannot spend the unit the harness needs. It also adds a medium audit finding for a noisy copy of the target (Spearman at least 0.83 with a Fisher lower bound of at least 0.78) and a `many_trials` finding above 20 recorded trials, with a selection warning in the claim report. The unit tests detect a noisy copy at 0.5 label standard deviations in 30 of 30 replicates, but a single honest feature with R² of 0.7 or more can be flagged. Binary labels still use only the AUC of 0.98 threshold.
 
 ## Discussion
 
@@ -183,8 +183,8 @@ Same-user file permissions do not stop a determined agent. A stronger version ne
 
 **Detection gaps.**
 
-- The `many-trials` hack is undetected by every automated signal. The selection gap is a weak signal: only 20 percent of the K=100 replicates exceed the 95th percentile of the calibration gaps.
-- The target-leak check has a cliff. Noise of 0.1 label standard deviations is found in 30 of 30 replicates, and noise of 0.2 in 0 of 30.
+- Before pull request #12, the `many-trials` hack was undetected by every automated signal; the new trial-count finding flags it but has not been evaluated. The selection gap is a weak signal: only 20 percent of the K=100 replicates exceed the 95th percentile of the calibration gaps.
+- Before pull request #12, the target-leak check had a cliff. Noise of 0.1 label standard deviations is found in 30 of 30 replicates, and noise of 0.2 in 0 of 30.
 - Near duplicates with noise of 0.2 standard deviations stay undetected by construction.
 - The audit raises a high `entity_overlap` finding on every task 01 run, honest or not, and gradient boosting trips the gap flag on tasks 01 and 02. Neither finding separates an exploit from a legitimate model.
 - The ledger has no key. A consistent rewrite of `ledger.jsonl` and `head.txt` passes verification. Version 2 needs a separate user or a container.
