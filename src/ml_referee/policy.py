@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ml_referee.config import Config, store_dir, store_root
-from ml_referee.shellparse import Command, split_commands
+from ml_referee.shellparse import Command, split_commands, split_heredocs
 
 
 def _expanduser(value: str) -> str:
@@ -75,8 +75,13 @@ class Policy:
         except (OSError, RuntimeError, ValueError):
             return True
 
-    def substring_touches(self, text: str) -> bool:
-        """Scan literal text without shell parsing or filesystem expansion."""
+    def substring_touches(self, text: str, *, prose: bool = False) -> bool:
+        """Scan literal text without shell parsing or filesystem expansion.
+
+        With ``prose`` the text is file content or an inert here-document body,
+        not a command: the bare name ``ml-referee`` is then no access (it only
+        names the tool), but the name used as a path component still is.
+        """
         workspace = self.workspace.resolve()
         store = self.store.resolve()
         normalized = re.sub(r"[^A-Za-z0-9_./~$-]", "", text)
@@ -113,7 +118,8 @@ class Policy:
                 "",
                 text,
             )
-        return "ml-referee" in stripped or "ml-referee" in re.sub(
+        needle = "ml-referee/" if prose else "ml-referee"
+        return needle in stripped or needle in re.sub(
             r"[^A-Za-z0-9_./~$-]", "", stripped,
         )
 
@@ -203,6 +209,12 @@ def decide(event: dict[str, object], policy: Policy) -> Decision:  # noqa: C901,
             if not isinstance(value, str):
                 return denied
             if name == "Bash" and key == "command":
+                split = split_heredocs(value)
+                if split is not None:
+                    # Inert cat/tee here-document bodies are file content.
+                    value, bodies = split
+                    if any(active.substring_touches(b, prose=True) for b in bodies):
+                        return denied
                 allowed = _cli_verdict(value, policy, active)
                 if allowed is False or (
                     allowed is None and _bash_denied(value, policy, active)
@@ -210,7 +222,7 @@ def decide(event: dict[str, object], policy: Policy) -> Decision:  # noqa: C901,
                     return denied
                 continue
             if name in {"Write", "Edit"} and key in {"content", "new_string"}:
-                if active.substring_touches(value):
+                if active.substring_touches(value, prose=True):
                     return denied
                 continue
             if active.touches_sealed(value):
@@ -245,17 +257,67 @@ def _config_path(policy: Policy) -> Path:
     return (policy.workspace / ".ml-referee.toml").resolve()
 
 
-def _config_glob(value: str, policy: Policy, active: Policy) -> bool:
-    """Return True if a glob token in ``value`` can match the config file."""
+# Shell options and variables that let ``*`` or ``?`` match a leading dot.
+_DOTGLOB = re.compile(
+    r"dotglob|glob_?dots|extglob|shopt|setopt|globignore|bashopts|bash_env|rcfile",
+    re.IGNORECASE,
+)
+
+
+def _dot_safe(pattern: str) -> bool:
+    """Return True if no component of the glob can match a name starting ``.``.
+
+    Without ``dotglob`` the shell only matches a leading dot with a literal
+    ``.``. A component that starts with ``*``, ``?`` (not ``?(``), a letter,
+    a digit, ``_`` or ``-`` cannot, so such a pattern never names the config.
+    """
+    for part in pattern.split("/"):
+        if part in {"", ".", ".."}:
+            continue
+        if part[0] in "*?" and part[1:2] != "(":
+            continue
+        if part[0].isalnum() or part[0] in "_-":
+            continue
+        return False
+    return True
+
+
+def _shell_expanded(token: str, text: str) -> bool:
+    """Return True if ``token`` appears in ``text`` with no quote touching it.
+
+    The shell then expands it itself. A quoted pattern (``find -name '*.toml'``)
+    reaches a program that may match dotfiles, so it is not covered.
+    """
+    return re.search(
+        rf"(?<![^\s;&|<>]){re.escape(token)}(?![^\s;&|<>])", text,
+    ) is not None
+
+
+def _config_glob(
+    value: str, policy: Policy, active: Policy, context: str | None = None,
+) -> bool:
+    """Return True if a glob token in ``value`` can match the config file.
+
+    ``context`` is the whole command line; it decides whether a hidden-file
+    option may be set anywhere in it.
+    """
     try:
         tokens = shlex.split(value, posix=True)
     except ValueError:
         tokens = value.split()
+    dotless = context is not None and not _DOTGLOB.search(
+        re.sub(r"""['"\\]""", "", context),
+    )
     return any(
         Path(match).resolve() == _config_path(policy)
         for token in tokens
         for spelling in {token, token.split("=", 1)[-1]}
         if glob.has_magic(spelling)
+        and not (
+            dotless
+            and _dot_safe(spelling)
+            and _shell_expanded(spelling, context or "")
+        )
         for match in glob.iglob(  # noqa: PTH207
             str((active.cwd or active.workspace) / _expand(spelling, dict(os.environ))),
             include_hidden=True,
@@ -271,7 +333,8 @@ def _bash_denied(value: str, policy: Policy, active: Policy) -> bool:
         tokens = value.split()
     simple = not any(char in value for char in ";&|<>()`\n$")
     if (
-        ".ml-referee.toml" in value or _config_glob(value, policy, active)
+        ".ml-referee.toml" in value
+        or _config_glob(value, policy, active, value)
     ) and not (simple and tokens and tokens[0] in _READ_ONLY):
         return True
     return active.touches_sealed(value)
@@ -287,7 +350,7 @@ _CLI_HELP = frozenset({*_CLI_FLAGS, "seal", "claim", "install"})
 _ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 _UNSAFE_ASSIGN = re.compile(
     r"(?:PATH|PYTHON\w*|LD_\w+|XDG_\w+|HOME|ML_REFEREE\w*|BASH_ENV|ENV|IFS|CDPATH"
-    r"|GLOBIGNORE|SHELLOPTS|PS4)=",
+    r"|GLOBIGNORE|SHELLOPTS|BASHOPTS|PS4)=",
 )
 # Builtins that can redefine commands, options, or what runs next.
 _SHELL_STATE = frozenset({
@@ -498,7 +561,7 @@ def _cli_verdict(  # noqa: C901, PLR0911, PLR0912
                 # command typed alone, not to a segment of a longer line.
                 if (
                     ".ml-referee.toml" in command.text
-                    or _config_glob(command.text, policy, at_cwd)
+                    or _config_glob(command.text, policy, at_cwd, value)
                     or at_cwd.touches_sealed(command.text)
                 ):
                     return False
