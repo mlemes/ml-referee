@@ -125,8 +125,12 @@ class Policy:
                 tokens = shlex.split(candidate, posix=True)
             except ValueError:
                 tokens = candidate.split()
-            for token in tokens:
-                pattern = token.split("=", 1)[-1]
+            # ``=`` can sit inside a bracket glob, so test both spellings.
+            for pattern in {
+                spelling
+                for token in tokens
+                for spelling in (token, token.split("=", 1)[-1])
+            }:
                 if _resolved_touches(
                     pattern, self.store, self.workspace, self.cwd or self.workspace,
                 ):
@@ -250,12 +254,10 @@ def _config_glob(value: str, policy: Policy, active: Policy) -> bool:
     return any(
         Path(match).resolve() == _config_path(policy)
         for token in tokens
-        if glob.has_magic(token)
+        for spelling in {token, token.split("=", 1)[-1]}
+        if glob.has_magic(spelling)
         for match in glob.iglob(  # noqa: PTH207
-            str(
-                (active.cwd or active.workspace)
-                / _expand(token.split("=", 1)[-1], dict(os.environ)),
-            ),
+            str((active.cwd or active.workspace) / _expand(spelling, dict(os.environ))),
             include_hidden=True,
         )
     )
@@ -289,7 +291,7 @@ _UNSAFE_ASSIGN = re.compile(
 )
 # Builtins that can redefine commands, options, or what runs next.
 _SHELL_STATE = frozenset({
-    "shopt", "alias", "unalias", "function", "eval", "source", ".", "builtin",
+    "shopt", "alias", "unalias", "function", "eval", "source", "builtin",
     "enable", "trap",
 })
 _DURATION = re.compile(r"\d+(?:\.\d+)?[smhd]?")
@@ -306,11 +308,11 @@ _MAX_CWDS = 8
 def _unwrap(words: list[str]) -> list[str] | None:  # noqa: C901, PLR0912
     """Strip leading assignments and the wrappers the agent commonly uses."""
     rest = list(words)
-    while rest and rest[0] in _LEADERS:
-        rest.pop(0)
     while rest:
         head = rest[0]
-        if _ASSIGN.match(head):
+        if head in _LEADERS:
+            rest.pop(0)
+        elif _ASSIGN.match(head):
             if _UNSAFE_ASSIGN.match(head):
                 return None
             rest.pop(0)
@@ -446,7 +448,14 @@ def _cli_verdict(  # noqa: C901, PLR0911, PLR0912
         rest = _unwrap(list(command.words))
         argv = _cli_argv(rest) if rest is not None else None
         probe = rest in (["which", "ml-referee"], ["command", "-v", "ml-referee"])
-        if (rest or [""])[0] in _SHELL_STATE:
+        # The CLI's own subcommand (``eval``) is not a shell builtin.
+        scanned = command.words[: len(command.words) - len(argv or [])]
+        if (
+            any(word in _SHELL_STATE or word == "coproc" for word in scanned)
+            or (rest or [""])[0] == "."
+            or command.words[:1] == (".",)
+            or ("command" in command.words and not probe)
+        ):
             return False
         if any(word in {"cd", "pushd", "popd"} for word in command.words) and (
             not rest or rest[0] not in {"cd", "pushd", "popd"}
@@ -474,7 +483,15 @@ def _cli_verdict(  # noqa: C901, PLR0911, PLR0912
                 return False
             if not _argv_allowed(argv, policy, cwds):
                 return False
-        elif not probe:
+        elif probe:
+            # ``which``/``command -v`` still run in the shell: check the rest.
+            if any(
+                word not in {"ml-referee", *_LEADERS}
+                and _value_denied(word, policy, cwds)
+                for word in command.words
+            ) or ".ml-referee.toml" in command.text:
+                return False
+        else:
             for cwd in cwds:
                 at_cwd = Policy(policy.store, policy.workspace, cwd)
                 # No read-only exemption for the config here: it applies to a

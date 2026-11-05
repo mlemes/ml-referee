@@ -234,6 +234,18 @@ def mirror(lay: Lay) -> list[str]:
         "builtin cd ..; ml-referee --help",
         "command cd ..; ml-referee --help",
         "cd ..; builtin cd ..; ml-referee --help",
+        # review round 2
+        "x=${a=~/.local/share/ml-referee} command -v ml-referee && ls -R $a",
+        "x=${a=.ml-referee.toml} command -v ml-referee && cp fake.toml $a",
+        "x=$y which ml-referee",
+        "command eval 'ls' ; ml-referee --help",
+        "time ! eval 'ls'; ml-referee --help",
+        "coproc ls; ml-referee --help",
+        ". ./x.sh; ml-referee --help",
+        "time ! . ./x.sh; ml-referee --help",
+        "source x.sh; ml-referee --help",
+        "cp fake.toml .ml[-=]*; ml-referee --help",
+        "ml-referee eval --predictions .ml[-=]*",
         # subcommands and flags outside the agent set
         "ml-referee seal --evaluator e.py",
         "ml-referee seal --evaluator e.py --holdout-file h.csv",
@@ -337,6 +349,21 @@ def test_cd_to_a_store_ancestor_then_glob_is_denied_with_the_cli(
     assert not verdict("claude", f"(cd {ancestor}) && cat {glob}/ho* | ml-referee audit", lay, monkeypatch)
     # The same listing from the workspace matches nothing and is allowed.
     assert verdict("claude", f"ml-referee audit; cat {glob}/ho*", lay, monkeypatch)
+
+
+def test_equals_inside_a_bracket_glob_still_reaches_the_store(
+    lay: Lay, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ancestor = lay.home if (lay.home / ".local").exists() else lay.home.parent
+    parts = lay.store.relative_to(ancestor).parts
+    last = parts[-1]
+    glob = "/".join(f"{part[:2]}*" for part in parts[:-1])
+    glob += f"/{last[:2]}[{last[2]}=]*"
+    for command in (
+        f"cd {ancestor} && ml-referee audit --against '{glob}/ho*'",
+        f"cd {ancestor} && cat {glob}/ho*; ml-referee --help",
+    ):
+        assert not verdict("claude", command, lay, monkeypatch), command
 
 
 def test_cd_inside_a_group_or_after_a_keyword_is_tracked(
