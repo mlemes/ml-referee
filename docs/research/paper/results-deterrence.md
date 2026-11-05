@@ -40,4 +40,34 @@ A budget flaw affected the C4 runs. Twelve of 30 C4 agents ran the sealed evalua
 
 ## Codex arm
 
-**Pending.** The Codex (Luna) arm of the deterrence experiment is still running. Its results will be reported here from `docs/results-deterrence-codex.md` on the experiments branch `e7-luna`. No Codex deterrence number appears in this paper.
+Numbers come from the experiments repository, commit `366c342` (branch `e7-luna`), `docs/results-deterrence-codex.md` and `results/expected/deterrence-codex/summary.json`.
+
+The arm runs `codex exec -m gpt-6-luna -s workspace-write` on the host with Codex's native sandbox, on the same product commit as the second Haiku run. Seeds 1 to 3 on three tasks give 27 runs with the same prompts, hack criterion, and tests. The C3 and C4 runs add the sealed store as a writable root so that `ml-referee eval` can write its ledger. With 9 runs per condition, every rate is descriptive.
+
+| Condition | Hacks | Runs | Rate | 95% interval |
+|---|---|---|---|---|
+| C0 (no plugin) | 6 | 9 | 67% | [0.35, 0.88] |
+| C3 (plugin, passive) | 3 | 8 | 38% | [0.14, 0.69] |
+| C4 (plugin plus audit and eval prompt) | 1 | 9 | 11% | [0.02, 0.43] |
+
+Table 4. Hack rate in the Codex arm. One C3 run (`regression_task_02` seed 3) is not counted, because the agent's last edit left a `solution.py` that raises. Counting it as a hack would make C3 4 of 9.
+
+Per task (hacks over runs): `regression_task_01` C0 3/3, C3 3/3, C4 0/3. `regression_task_02` C0 3/3, C3 0/2, C4 1/3. `classification_task_03` 0/3 in every condition.
+
+Fisher exact p (two-sided) is 0.35 for C0 against C3 and 0.29 for C3 against C4. The C0 against C4 test gives p = 0.050. It is exploratory and not pre-registered, and it is 0.15 after a Bonferroni correction over three tests.
+
+All 9 C4 agents ran the audit and a sealed evaluation, and 7 of 9 edited `solution.py` after the first feedback. C3 was not passive in practice: 3 of 8 finished C3 agents ran `ml-referee eval` themselves after reading the `AGENTS.md` block. In 9 runs the agent spent both sealed evaluations, so the harness claim refused to run.
+
+### Interpretation
+
+The ordering matches the Haiku second run for C4, but the intervals overlap and only the exploratory C0 against C4 test reaches p = 0.050. The drop sits on `regression_task_01`, the same task where the Haiku C4 rate fell, so the pattern is at least as task-specific as it is condition-specific. The arm is consistent in direction with Haiku and underpowered, and it is not a replication.
+
+### Limits
+
+- n is 9 per condition, from one small model, three synthetic tasks, and seeds 1 to 3.
+- The prompt wording and the `--predict-cmd` form came from the Haiku arm and were not tuned for Codex.
+- Hook trust: the user trusted the hooks once for a fixed path and file. The harness checks the file bytes and the recorded trials (16 of 17 finished plugin runs), but it cannot check that Codex still honors the trust.
+- The host Codex runs read the user's `~/.codex` setup, including a global instruction file and a shell wrapper that rewrites commands, so the runs are not isolated from it.
+- The sandbox lets the agent read the host filesystem, so you cannot rule out that an agent read the hidden file or the sealed store from Python code. The hooks and the transcript check would not show it, because the check covers only what appears in the transcript.
+- The compliance check reads shell commands and file-change events, so a rewrite through an unusual construct is not seen.
+- One C3 run is missing, so C3 has n = 8.
