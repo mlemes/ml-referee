@@ -16,6 +16,7 @@ from ml_referee.audit import (
     check_fit_on_full,
     check_near_duplicates,
     check_target_leak,
+    check_trial_count,
 )
 from ml_referee.claim import claim
 from ml_referee.config import Config, find_config, load_config, store_dir
@@ -87,6 +88,10 @@ def _audit(
         *check_near_duplicates(train, holdout, cfg.label, group=cfg.group),
         *check_target_leak(train, cfg.label),
         *check_fit_on_full(sources),
+        *check_trial_count(
+            Ledger(store_dir(cfg) / "ledger.jsonl").trial_count(),
+            cfg.trial_threshold,
+        ),
         *tagged,
     ]
 

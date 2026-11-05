@@ -64,7 +64,7 @@ With `--holdout-file PATH`, `seal.seal` validates the file first (same columns a
 
 1. `cli.audit` verifies the store, then loads the workspace train file and the sealed holdout.
 2. `audit.checks` produce findings: duplicates (the label column is ignored), near duplicates (numeric features standardized with the training statistics, nearest training row per holdout row through a `cKDTree`, label ignored, counts only), entity overlap, target leakage (Spearman rank correlation for non-binary labels: high at 0.98, medium noisy-copy finding at 0.83 with a lower-bound guard), and fit before split in the files you pass with `--sources`.
-3. `cli.audit` prints one JSON line per finding. It exits 3 when any finding is high severity.
+3. `cli.audit` also reads the `trial` count from the ledger and adds a medium `many_trials` finding when it exceeds `audit.trial_threshold` (default 20). `cli.audit` prints one JSON line per finding. It exits 3 when any finding is high severity.
 4. The `ml-reviewer` agent reads the diff and the findings and reports without editing files.
 5. For each `--against PATH` file, `cli.audit` also compares the workspace train file with that file (label dropped, group column from the config), runs the duplicate, near-duplicate, and entity-overlap checks, and tags each finding with `[against=<basename>]`. A missing or unreadable file exits 1 before `claim` spends any holdout budget.
 
@@ -75,9 +75,10 @@ Audit and claim counts reveal holdout membership to an agent that can run the CL
 1. You run `/ml-claim`, which calls `ml-referee claim --predictions <path>`. Optional inputs are `--val-scores` (a JSON list), `--p-value`, and `--out`.
 2. `cli.claim` validates `--out` (not a directory, writable, outside the store) before it spends the budget, then runs the audit with no source files to collect findings.
 3. `claim.report.claim` verifies the store, then reads the trial count `N` from the ledger.
-4. `claim.report.claim` calls `runner.run_holdout_eval`. This consumes one holdout evaluation, even if you ran `eval` before.
+4. `claim.report.claim` calls `runner.run_holdout_eval` with role `claim`, which may spend the reserved budget. This consumes one holdout evaluation, even if you ran `eval` before.
 5. `claim.report.build_report` applies `bonferroni(p_value, N)` when you supply a p-value and `selection_gap` when you supply validation scores.
-6. The report lists the sealed score, `N`, the adjusted result, the audit findings, and the statement that hooks are a policy layer, not a sandbox. It goes to `--out` or standard output.
+6. When `N` exceeds `audit.trial_threshold`, `build_report` adds a "Selection warning" section (with the Bonferroni-adjusted p-value when one was supplied). It flags and adjusts. It cannot prove selection.
+7. The report lists the sealed score, `N`, the adjusted result, the audit findings, and the statement that hooks are a policy layer, not a sandbox. It goes to `--out` or standard output.
 
 ## Scripted attack bench
 

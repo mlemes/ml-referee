@@ -152,3 +152,20 @@ def test_config_reserve_out_of_range(
     )
     with pytest.raises(ConfigError, match="claim_reserve"):
         load_config(tmp_path / "c.toml")
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [("", 20), ("[audit]\ntrial_threshold = 5", 5)],
+)
+def test_config_trial_threshold(tmp_path: Path, line: str, expected: int) -> None:
+    (tmp_path / "c.toml").write_text(_cfg_text(2, "") + line + "\n")
+    assert load_config(tmp_path / "c.toml").trial_threshold == expected
+
+
+def test_config_trial_threshold_must_be_positive(tmp_path: Path) -> None:
+    (tmp_path / "c.toml").write_text(
+        _cfg_text(2, "") + "[audit]\ntrial_threshold = 0\n"
+    )
+    with pytest.raises(ConfigError, match="trial_threshold"):
+        load_config(tmp_path / "c.toml")

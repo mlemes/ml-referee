@@ -19,6 +19,7 @@ NEAR_DUP_MAX_ROWS = 20_000
 NEAR_DUP_MEDIUM = 0.01
 NEAR_DUP_HIGH = 0.05
 NEAR_DUP_MIN_ROWS = 3
+DEFAULT_TRIAL_THRESHOLD = 20
 
 # Noisy-copy check (numeric labels): a feature whose rank correlation with the
 # label is at least NOISY_COPY_RHO, with a one-sided 95% Fisher lower bound of
@@ -249,6 +250,27 @@ def check_target_leak(  # noqa: C901
                 Finding("target_leak", "high", f"{column!r} AUC={auc:.6f}."),
             )
     return findings
+
+
+def check_trial_count(
+    trials: int, threshold: int = DEFAULT_TRIAL_THRESHOLD,
+) -> list[Finding]:
+    """Flag a trial count above ``threshold`` as a selection-bias risk.
+
+    This flags and does not prove selection: the count shows how many times
+    the agent had a chance to pick a winner, not that it picked one on the
+    public score.
+    """
+    if trials <= threshold:
+        return []
+    return [
+        Finding(
+            "many_trials", "medium",
+            f"{trials} trials recorded (threshold {threshold}): the public "
+            "score is selection-biased if the final model was chosen among "
+            "them on that score.",
+        ),
+    ]
 
 
 def _scope_nodes(node: ast.AST) -> list[ast.AST]:

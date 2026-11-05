@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -225,3 +226,42 @@ def test_claim_validation_scores_optional(
     cfg, preds = _setup(tmp_path, monkeypatch)
     text = claim(cfg, preds)
     assert "Selection gap unavailable" in text
+
+
+def test_report_selection_warning_above_threshold() -> None:
+    result = EvalResult(metric="acc", value=0.8, n=25)
+    text = build_report(
+        _manifest(), result, 25, [], [], p_value=0.01, trial_threshold=20
+    )
+    section = _section(text, "Selection warning")
+    assert "25 trials" in section
+    assert "selection-biased" in section
+    assert "0.25" in section
+    assert "cannot prove" in section
+    assert "—" not in text
+
+
+def test_report_no_selection_warning_at_or_below_threshold() -> None:
+    result = EvalResult(metric="acc", value=0.8, n=25)
+    text = build_report(_manifest(), result, 20, [], [], trial_threshold=20)
+    assert "Selection warning" not in text
+    assert "Selection warning" not in build_report(
+        _manifest(), result, 0, [], []
+    )
+
+
+def test_report_warning_without_p_value_says_adjustment_unavailable() -> None:
+    result = EvalResult(metric="acc", value=0.8, n=25)
+    text = build_report(_manifest(), result, 30, [], [], trial_threshold=20)
+    assert "no p-value" in _section(text, "Selection warning")
+
+
+def test_claim_uses_config_threshold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, preds = _setup(tmp_path, monkeypatch)
+    ledger = Ledger(store_dir(cfg) / "ledger.jsonl")
+    for i in range(3):
+        ledger.append("trial", {"i": i})
+    low = replace(cfg, trial_threshold=2)
+    assert "Selection warning" in claim(low, preds, p_value=0.01)

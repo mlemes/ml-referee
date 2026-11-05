@@ -522,3 +522,19 @@ def test_claim_against_two_flags_second_missing_exits_one_budget_unchanged(
     assert code == 1
     assert cap.err
     assert _ledger(ws).eval_count() == 0
+
+
+def test_audit_many_trials_medium_finding_exit_zero(
+    ws: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (ws / ".ml-referee.toml").write_text(TOML + "\n[audit]\ntrial_threshold = 2\n")
+    _seal(ws, capsys)
+    ledger = Ledger(store_dir(load_config(ws / ".ml-referee.toml")) / "ledger.jsonl")
+    for i in range(3):
+        ledger.append("trial", {"i": i})
+    code = main(["audit"])
+    lines = [json.loads(x) for x in capsys.readouterr().out.splitlines() if x.strip()]
+    found = [x for x in lines if x["check"] == "many_trials"]
+    assert [x["severity"] for x in found] == ["medium"]
+    assert "3 trials" in found[0]["detail"]
+    assert code == 0
