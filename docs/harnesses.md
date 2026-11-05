@@ -39,6 +39,12 @@ The following table lists the install output, the trust step, the fail mode, and
 | agy | `.agents/hooks.json`, `AGENTS.md` block | Not checked. The live runs did not test a trust prompt. | Fails open on hook crash or timeout. | Verified live on agy 1.4.12. The pre-tool hook denied a store read, and a benign command ran. See `docs/research/evaluation/live-checks.md`. |
 | opencode | `.opencode/plugins/ml-referee.js`, `AGENTS.md` block | None documented. | Plugin throws on deny. A spawn error throws, so the call is blocked. | Vendor docs only. Not installed. The runtime issue in anomalyco/opencode#25918 is unconfirmed, and the hook may not fire. |
 
+## What the agent can run
+
+On every harness the guard lets the agent run the plugin CLI, alone or in ordinary shell pipelines and redirections: `ml-referee audit [--against PATH ...] [--sources PATH ...]`, `ml-referee eval --predictions PATH`, `ml-referee eval --predict-cmd "CMD"`, `ml-referee verify-ledger`, and `ml-referee <subcommand> --help`. Examples that pass: `ml-referee audit --against test.csv 2>&1 | tail -n 40`, `timeout 110 ml-referee audit > audit.log 2>&1`, `which ml-referee && ml-referee audit`, `(command -v ml-referee && ml-referee audit) > audit.log 2>&1`. The guard still denies `seal`, `claim`, and `install`; any path or redirection target inside the store or at `.ml-referee.toml`; `$`, backticks, and braces in CLI paths; command substitution, here documents, and `bash -c` or `eval` that carry the CLI name. The `AGENTS.md` block lists these commands and the holdout budget (printed from `.ml-referee.toml` when the config exists at install time). It describes what exists and does not tell the agent to run it.
+
+`ml-referee eval --predict-cmd "python predict.py {features} {out}"` lets an agent that cannot see the sealed rows get a score: the runner hands the command the sealed rows without labels and scores the file it writes. See `docs/architecture.md` for the checks and the residual (the predictor runs as the same user).
+
 ## Known limits
 
 - Guard coverage differs per harness. Codex has no `Read` tool, so Codex reads go through `Bash`.

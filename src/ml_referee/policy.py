@@ -8,6 +8,22 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ml_referee.config import Config, store_dir, store_root
+from ml_referee.shellparse import Command, split_commands
+
+
+def _expanduser(value: str) -> str:
+    """Expand ``~`` like the shell: an unknown ``~name`` stays literal.
+
+    ``Path.expanduser`` raises for ``~0.5`` (an approximation in prose), which
+    made the guard deny harmless text. ``~`` and ``~/...`` still fail closed.
+    """
+    try:
+        return str(Path(value).expanduser())
+    except RuntimeError:
+        # ``~+`` and ``~-`` mean $PWD and $OLDPWD in the shell: keep them closed.
+        if re.match(r"~[^/+-]", value):
+            return value
+        raise
 
 
 def _expand(value: str, variables: dict[str, str]) -> str:
@@ -18,7 +34,7 @@ def _expand(value: str, variables: dict[str, str]) -> str:
     )
     if expanded == "~" or expanded.startswith("~/"):
         return variables.get("HOME", str(Path.home())) + expanded[1:]
-    return str(Path(expanded).expanduser())
+    return _expanduser(expanded)
 
 
 def _resolve(value: str, cwd: Path) -> Path:
@@ -30,7 +46,7 @@ def _resolved_touches(value: str, store: Path, workspace: Path, cwd: Path) -> bo
     if not value or glob.has_magic(value):
         return False
     try:
-        path = _resolve(str(Path(value).expanduser()), cwd)
+        path = _resolve(_expanduser(value), cwd)
     except (OSError, RuntimeError, ValueError):
         return "/" in value or "." in value
     return (
@@ -109,8 +125,12 @@ class Policy:
                 tokens = shlex.split(candidate, posix=True)
             except ValueError:
                 tokens = candidate.split()
-            for token in tokens:
-                pattern = token.split("=", 1)[-1]
+            # ``=`` can sit inside a bracket glob, so test both spellings.
+            for pattern in {
+                spelling
+                for token in tokens
+                for spelling in (token, token.split("=", 1)[-1])
+            }:
                 if _resolved_touches(
                     pattern, self.store, self.workspace, self.cwd or self.workspace,
                 ):
@@ -183,36 +203,12 @@ def decide(event: dict[str, object], policy: Policy) -> Decision:  # noqa: C901,
             if not isinstance(value, str):
                 return denied
             if name == "Bash" and key == "command":
-                try:
-                    tokens = shlex.split(value, posix=True)
-                except ValueError:
-                    tokens = value.split()
-                simple = not any(char in value for char in ";&|<>()`\n$")
-                config_glob = any(
-                    Path(match).resolve()
-                    == (policy.workspace / ".ml-referee.toml").resolve()
-                    for token in tokens
-                    if glob.has_magic(token)
-                    for match in glob.iglob(  # noqa: PTH207
-                        str(
-                            (active.cwd or active.workspace)
-                            / _expand(token.split("=", 1)[-1], dict(os.environ)),
-                        ),
-                    )
-                )
-                if (".ml-referee.toml" in value or config_glob) and not (
-                    simple
-                    and tokens
-                    and tokens[0]
-                    in {"cat", "head", "tail", "less", "ls", "grep", "wc", "stat"}
+                allowed = _cli_verdict(value, policy, active)
+                if allowed is False or (
+                    allowed is None and _bash_denied(value, policy, active)
                 ):
                     return denied
-                # Only a single CLI invocation gets the trusted-program exception.
-                if simple and tokens:
-                    if tokens[0] == "ml-referee":
-                        value = " ".join(tokens[1:])
-                    elif tokens[:3] == ["python", "-m", "ml_referee"]:
-                        value = " ".join(tokens[3:])
+                continue
             if name in {"Write", "Edit"} and key in {"content", "new_string"}:
                 if active.substring_touches(value):
                     return denied
@@ -240,6 +236,278 @@ def decide(event: dict[str, object], policy: Policy) -> Decision:  # noqa: C901,
         return denied
     return Decision(allow=True, reason="No sealed store access")
 
+
+
+_READ_ONLY = {"cat", "head", "tail", "less", "ls", "grep", "wc", "stat"}
+
+
+def _config_path(policy: Policy) -> Path:
+    return (policy.workspace / ".ml-referee.toml").resolve()
+
+
+def _config_glob(value: str, policy: Policy, active: Policy) -> bool:
+    """Return True if a glob token in ``value`` can match the config file."""
+    try:
+        tokens = shlex.split(value, posix=True)
+    except ValueError:
+        tokens = value.split()
+    return any(
+        Path(match).resolve() == _config_path(policy)
+        for token in tokens
+        for spelling in {token, token.split("=", 1)[-1]}
+        if glob.has_magic(spelling)
+        for match in glob.iglob(  # noqa: PTH207
+            str((active.cwd or active.workspace) / _expand(spelling, dict(os.environ))),
+            include_hidden=True,
+        )
+    )
+
+
+def _bash_denied(value: str, policy: Policy, active: Policy) -> bool:
+    """Apply the store rules to one shell text; no plugin CLI exception."""
+    try:
+        tokens = shlex.split(value, posix=True)
+    except ValueError:
+        tokens = value.split()
+    simple = not any(char in value for char in ";&|<>()`\n$")
+    if (
+        ".ml-referee.toml" in value or _config_glob(value, policy, active)
+    ) and not (simple and tokens and tokens[0] in _READ_ONLY):
+        return True
+    return active.touches_sealed(value)
+
+
+# Plugin CLI the agent may run, with the flags each subcommand accepts.
+_CLI_FLAGS = {
+    "audit": frozenset({"--against", "--sources"}),
+    "eval": frozenset({"--predictions", "--predict-cmd"}),
+    "verify-ledger": frozenset(),
+}
+_CLI_HELP = frozenset({*_CLI_FLAGS, "seal", "claim", "install"})
+_ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_UNSAFE_ASSIGN = re.compile(
+    r"(?:PATH|PYTHON\w*|LD_\w+|XDG_\w+|HOME|ML_REFEREE\w*|BASH_ENV|ENV|IFS|CDPATH"
+    r"|GLOBIGNORE|SHELLOPTS|PS4)=",
+)
+# Builtins that can redefine commands, options, or what runs next.
+_SHELL_STATE = frozenset({
+    "shopt", "alias", "unalias", "function", "eval", "source", "builtin",
+    "enable", "trap",
+})
+_DURATION = re.compile(r"\d+(?:\.\d+)?[smhd]?")
+_PYTHON = re.compile(r"python(?:\d+(?:\.\d+)*)?")
+_PY_FLAG = re.compile(r"-[uBsSEO]+")
+_UV_FLAGS = frozenset(
+    {"--no-sync", "--frozen", "--locked", "--offline", "-q", "--quiet"},
+)
+_LEADERS = frozenset({"{", "!", "if", "then", "else", "elif", "do", "while", "until"})
+_PLACEHOLDERS = ("{features}", "{out}")
+_MAX_CWDS = 8
+
+
+def _unwrap(words: list[str]) -> list[str] | None:  # noqa: C901, PLR0912
+    """Strip leading assignments and the wrappers the agent commonly uses."""
+    rest = list(words)
+    while rest:
+        head = rest[0]
+        if head in _LEADERS:
+            rest.pop(0)
+        elif _ASSIGN.match(head):
+            if _UNSAFE_ASSIGN.match(head):
+                return None
+            rest.pop(0)
+        elif head in {"env", "nohup", "time"}:
+            rest.pop(0)
+            option = {"env": "-i", "time": "-p"}.get(head)
+            if option is not None and rest[:1] == [option]:
+                rest.pop(0)
+        elif head == "timeout":
+            rest.pop(0)
+            while rest and rest[0].startswith("-"):
+                option = rest.pop(0)
+                if option in {"-k", "-s", "--kill-after", "--signal"} and rest:
+                    rest.pop(0)
+            if not rest or not _DURATION.fullmatch(rest.pop(0)):
+                return None
+        elif head == "uv" and rest[1:2] == ["run"]:
+            del rest[:2]
+            while rest and rest[0].startswith("-"):
+                if rest.pop(0) not in _UV_FLAGS:
+                    return None
+        else:
+            break
+    return rest
+
+
+def _cli_argv(rest: list[str]) -> list[str] | None:
+    """Return the arguments after the plugin CLI program, or None."""
+    if rest[:1] == ["ml-referee"]:
+        return rest[1:]
+    if rest and _PYTHON.fullmatch(rest[0]):
+        index = 1
+        while index < len(rest) and _PY_FLAG.fullmatch(rest[index]):
+            index += 1
+        if rest[index : index + 1] == ["-m"] and rest[index + 1 : index + 2] in (
+            ["ml_referee"],
+            ["ml_referee.cli"],
+        ):
+            return rest[index + 2 :]
+    return None
+
+
+def _value_denied(value: str, policy: Policy, cwds: list[Path]) -> bool:
+    """Return True if a CLI argument or redirect target may reach the store."""
+    if any(char in value for char in "$`{}"):
+        return True
+    for cwd in cwds:
+        active = Policy(policy.store, policy.workspace, cwd)
+        if (
+            ".ml-referee.toml" in value
+            or _config_glob(value, policy, active)
+            or active.touches_sealed(value)
+        ):
+            return True
+    return False
+
+
+def _argv_allowed(  # noqa: C901
+    argv: list[str], policy: Policy, cwds: list[Path],
+) -> bool:
+    """Check the subcommand, its flags, and every path or command it carries."""
+    if not argv:
+        return False
+    if argv in (["-h"], ["--help"]) or (
+        argv[0] in _CLI_HELP and argv[1:] in (["-h"], ["--help"])
+    ):
+        return True
+    allowed = _CLI_FLAGS.get(argv[0])
+    if allowed is None:
+        return False
+    flag = ""
+    for word in argv[1:]:
+        values = [word]
+        if word.startswith("-"):
+            flag, _, value = word.partition("=")
+            if flag not in allowed:
+                return False
+            values = [value] if value else []
+        for value in values:
+            text = value
+            if flag == "--predict-cmd":
+                for placeholder in _PLACEHOLDERS:
+                    text = text.replace(placeholder, "")
+            if any(char in text for char in "{}") or _value_denied(text, policy, cwds):
+                return False
+    return True
+
+
+def _redirects_allowed(command: Command, policy: Policy, cwds: list[Path]) -> bool:
+    for operator, target in command.redirects:
+        if operator.endswith("&") and (target.isdigit() or target == "-"):
+            continue  # file descriptor duplication, not a path
+        if _value_denied(target, policy, cwds):
+            return False
+    return True
+
+
+def _next_cwds(words: list[str], cwds: list[Path]) -> list[Path] | None:
+    """Add the directories a ``cd`` can reach; None when they are not static."""
+    args = words[1:]
+    if words[0] in {"pushd", "popd"} or len(args) > 1:
+        return None
+    target = args[0] if args else "~"
+    if not target or target.startswith("-") or any(c in target for c in "$`{}*?["):
+        return None
+    try:
+        reached = [
+            _resolve(_expand(target, dict(os.environ)), cwd) for cwd in cwds
+        ]
+    except (OSError, RuntimeError, ValueError):
+        return None
+    merged = [*cwds, *(path for path in reached if path not in cwds)]
+    return merged if len(merged) <= _MAX_CWDS else None
+
+
+def _cli_verdict(  # noqa: C901, PLR0911, PLR0912
+    value: str, policy: Policy, active: Policy,
+) -> bool | None:
+    """Judge a command that runs the plugin CLI.
+
+    Return None when it holds no plugin CLI segment (the store rules apply to
+    the whole text), True to allow, False to deny. Every segment other than the
+    CLI goes through the store rules; the CLI's arguments and every redirection
+    target must stay outside the store and away from the config.
+    """
+    commands = split_commands(value)
+    if commands is None or "CDPATH" in value:
+        return None
+    parsed = []
+    for command in commands:
+        if any(_UNSAFE_ASSIGN.match(word) for word in command.words):
+            return False
+        rest = _unwrap(list(command.words))
+        argv = _cli_argv(rest) if rest is not None else None
+        probe = rest in (["which", "ml-referee"], ["command", "-v", "ml-referee"])
+        # The CLI's own subcommand (``eval``) is not a shell builtin.
+        scanned = command.words[: len(command.words) - len(argv or [])]
+        if (
+            any(word in _SHELL_STATE or word == "coproc" for word in scanned)
+            or (rest or [""])[0] == "."
+            or command.words[:1] == (".",)
+            or ("command" in command.words and not probe)
+        ):
+            return False
+        if any(word in {"cd", "pushd", "popd"} for word in command.words) and (
+            not rest or rest[0] not in {"cd", "pushd", "popd"}
+        ):
+            return False  # a ``cd`` we cannot place in the command order
+        parsed.append((command, argv, probe, rest))
+    if not any(argv is not None or probe for _, argv, probe, _ in parsed):
+        return None
+    cwds = [active.cwd or active.workspace]
+    for command, argv, probe, rest in parsed:
+        if not _redirects_allowed(command, policy, cwds):
+            return False
+        if argv is not None:
+            if (
+                ".ml-referee.toml" in command.text
+                or _config_glob(command.text, policy, active)
+            ):
+                return False
+            lead = command.words[: len(command.words) - len(argv)]
+            if any(
+                word not in {"ml-referee", *_LEADERS}
+                and _value_denied(word, policy, cwds)
+                for word in lead
+            ):
+                return False
+            if not _argv_allowed(argv, policy, cwds):
+                return False
+        elif probe:
+            # ``which``/``command -v`` still run in the shell: check the rest.
+            if any(
+                word not in {"ml-referee", *_LEADERS}
+                and _value_denied(word, policy, cwds)
+                for word in command.words
+            ) or ".ml-referee.toml" in command.text:
+                return False
+        else:
+            for cwd in cwds:
+                at_cwd = Policy(policy.store, policy.workspace, cwd)
+                # No read-only exemption for the config here: it applies to a
+                # command typed alone, not to a segment of a longer line.
+                if (
+                    ".ml-referee.toml" in command.text
+                    or _config_glob(command.text, policy, at_cwd)
+                    or at_cwd.touches_sealed(command.text)
+                ):
+                    return False
+            if rest and rest[0] in {"cd", "pushd", "popd"}:
+                reached = _next_cwds(rest, cwds)
+                if reached is None:
+                    return False
+                cwds = reached
+    return True
 
 _NO_CONFIG_DENIED = Decision(
     allow=False, reason="Access to the ml-referee store root denied",
