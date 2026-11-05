@@ -348,3 +348,45 @@ def test_config_keys_validated(tmp_path: Path) -> None:
         path.write_text(base.format(data=data, ev=ev))
         with pytest.raises(ConfigError):
             load_config(path)
+
+
+def test_symlinked_output_and_log_cannot_leak_store_files(env: Env) -> None:
+    secret = store_dir(env.cfg) / "manifest.json"
+    body = (
+        "import os, pathlib, sys\n"
+        "out = pathlib.Path(sys.argv[2])\n"
+        f"os.symlink({str(secret)!r}, out)\n"
+        "log = out.parent / 'output.log'\n"
+        f"os.symlink({str(secret)!r}, log)\n"
+        "sys.exit(1)\n"
+    )
+    with pytest.raises(PredictorError) as info:
+        run_predict_eval(env.cfg, env.script(body))
+    assert "holdout_sha256" not in str(info.value)
+    ok = "import os, sys\nos.symlink(%r, sys.argv[2])\n" % str(secret)
+    with pytest.raises(PredictorError, match="regular"):
+        run_predict_eval(env.cfg, env.script(ok, "ok.py"))
+    assert env.evals == 0
+
+
+def test_cli_reports_predictor_failure_without_traceback(
+    env: Env, capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["eval", "--predict-cmd", env.script("import sys\nsys.exit(2)\n")]) == 1
+    captured = capsys.readouterr()
+    assert captured.err.startswith("ml-referee: ")
+    assert "Traceback" not in captured.err
+    assert main(["eval", "--predict-cmd", "false"]) == 1
+    assert env.evals == 0
+
+
+def test_placeholders_are_replaced_in_one_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = make_env(tmp_path, monkeypatch)
+    body = "import sys\nopen('args.txt', 'w').write(' '.join(sys.argv[1:]))\n" + CONST.split("\n", 1)[1]
+    body = body.replace("sys.argv[1]", "sys.argv[1]").replace("pd.read_csv(sys.argv[1])", "pd.read_csv(sys.argv[1])")
+    run_predict_eval(env.cfg, env.script(body))
+    features, out = (env.work / "args.txt").read_text().split()
+    assert features.endswith("features.csv")
+    assert out.endswith("predictions.csv")

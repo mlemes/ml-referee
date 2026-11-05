@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -128,46 +129,54 @@ def run_predict_eval(cfg: Config, predict_cmd: str) -> EvalResult:
 
 def _run_predictor(cfg: Config, args: list[str], features: Path, out: Path) -> None:
     """Run the predict command in the workspace; kill its process group."""
+    paths = {"{features}": str(features), "{out}": str(out)}
     argv = [
-        arg.replace("{features}", str(features)).replace("{out}", str(out))
+        re.sub(r"\{features\}|\{out\}", lambda match: paths[match[0]], arg)
         for arg in args
     ]
-    log = out.with_name("output.log")
+    # An unlinked file, not a pipe and not a path the predictor can replace:
+    # a background child holding a pipe would block the wait, and a symlink at
+    # a known path would make the runner read any file into an error message.
+    log = tempfile.TemporaryFile()  # noqa: SIM115
     try:
-        # A file, not a pipe: a background child holding a pipe would block the wait.
-        with log.open("wb") as sink:
-            process = subprocess.Popen(  # noqa: S603
-                argv,
-                cwd=cfg.workspace,
-                stdin=subprocess.DEVNULL,
-                stdout=sink,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
+        process = subprocess.Popen(  # noqa: S603
+            argv,
+            cwd=cfg.workspace,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
     except OSError as exc:
+        log.close()
         msg = f"Predict command could not start: {exc}"
         raise PredictorError(msg) from None
     try:
-        process.wait(timeout=cfg.predict_timeout_s)
-    except subprocess.TimeoutExpired:
-        msg = f"Predict command timed out after {cfg.predict_timeout_s} s"
-        raise PredictorError(msg) from None
+        try:
+            process.wait(timeout=cfg.predict_timeout_s)
+        except subprocess.TimeoutExpired:
+            msg = f"Predict command timed out after {cfg.predict_timeout_s} s"
+            raise PredictorError(msg) from None
+        finally:
+            # Stray children of the predictor must not outlive the run.
+            with suppress(ProcessLookupError, PermissionError):
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+        if process.returncode != 0:
+            log.seek(0, os.SEEK_END)
+            log.seek(max(0, log.tell() - PREDICT_OUTPUT_LIMIT))
+            tail = log.read().decode("utf-8", "replace")
+            msg = f"Predict command exited with {process.returncode}: {tail}"
+            raise PredictorError(msg)
     finally:
-        # Stray children of the predictor must not outlive the run.
-        with suppress(ProcessLookupError, PermissionError):
-            os.killpg(process.pid, signal.SIGKILL)
-        process.wait()
-    if process.returncode != 0:
-        with log.open("rb") as stream:
-            stream.seek(0, os.SEEK_END)
-            stream.seek(max(0, stream.tell() - PREDICT_OUTPUT_LIMIT))
-            tail = stream.read().decode("utf-8", "replace")
-        msg = f"Predict command exited with {process.returncode}: {tail}"
-        raise PredictorError(msg)
+        log.close()
 
 
 def _read_predictions(path: Path, rows: int) -> pd.DataFrame:
     """Read one predictions column; reject wrong length or missing values."""
+    if path.is_symlink() or not path.is_file():
+        msg = "Predict command wrote no regular predictions file"
+        raise PredictorError(msg)
     try:
         frame = pd.read_csv(path)
     except (OSError, ValueError, pd.errors.ParserError):

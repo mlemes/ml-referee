@@ -54,8 +54,8 @@ With `--holdout-file PATH`, `seal.seal` validates the file first (same columns a
 1. `cli.eval --predict-cmd CMD` passes `CMD` (untrusted text; the guard already checked it) to `runner.run_predict_eval`. A command without `{features}` and `{out}` or with bad quoting raises `ValueError` before anything else happens.
 2. `runner._budget_lock` verifies the store, takes the `flock`, and refuses when the ledger holds `holdout_budget` `eval` records. No temp file exists yet.
 3. The runner reads `holdout.parquet` (trusted), drops the label column (and the group column when `data.group_hidden` is true), and writes `features.csv` into a `0700` temp directory (trust boundary: the predictor sees this file, never the labels).
-4. `runner._run_predictor` runs `CMD` with `{features}` and `{out}` replaced, without a shell, in the workspace (`cfg.workspace`), with the `eval.predict_timeout_s` timeout (default 600 s). Its output goes to a log file. The runner kills the process group on exit or timeout.
-5. `runner._read_predictions` reads `{out}` (untrusted CSV): one column, `n_holdout` rows, no missing values, finite numbers. It writes a validated copy `scored.csv`.
+4. `runner._run_predictor` runs `CMD` with `{features}` and `{out}` replaced, without a shell, in the workspace (`cfg.workspace`), with the `eval.predict_timeout_s` timeout (default 600 s). Its output goes to an unlinked temp file. The runner kills the process group on exit or timeout.
+5. `runner._read_predictions` reads `{out}` (untrusted CSV; a symlink or non-regular file is refused): one column, `n_holdout` rows, no missing values, finite numbers. It writes a validated copy `scored.csv`.
 6. `runner._score` runs the sealed evaluator on the copy exactly as for `--predictions`, checks `n`, and appends an `eval` record that also holds `predict_cmd_sha256`.
 7. A `finally` block removes the temp directory. A failure at steps 3 to 5, or an evaluator failure, appends no record and spends no budget.
 8. `cli` prints the metric, the score, and `n`.
