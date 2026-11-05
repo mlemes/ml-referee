@@ -13,26 +13,89 @@ from ml_referee.config import Config, find_config, load_config, store_dir
 from ml_referee.harness import HARNESSES, detect_harness, normalize
 from ml_referee.ledger import Ledger, Record
 
+_REDIRECT = re.compile(
+    r"(?:(?<=\s)|^)(?:\d*|&)(?:>{1,2}|<{1,3})\s*&?\s*[^\s;&|'\")]+",
+)
+_WRAPPER = re.compile(
+    r"^(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S*)"
+    r"|(?:\S*/)?nice(?:\s+-n\s+[+-]?\d+|\s+-\d+)?"
+    r"|(?:\S*/)?env(?:\s+(?:-i|-0|--ignore-environment|(?:-u|--unset)\s+\S+))*"
+    r"|(?:\S*/)?time(?:\s+-p)?"
+    r"|(?:\S*/)?(?:nohup|setsid)|exec|command"
+    r"|(?:\S*/)?(?:bash|sh)\s+-[a-z]*c"
+    r"|(?:poetry|pipenv)\s+run|uv\s+run)(?:\s+|$)",
+)
+_UV_VALUE_FLAGS = {
+    "--with", "--with-requirements", "--python", "-p", "--directory", "--project",
+    "--env-file", "--extra", "--group", "--package", "--no-group", "--only-group",
+    "--with-editable", "--python-preference", "--index", "--default-index",
+    "--find-links", "-f", "--config-file", "-c",
+}
+_PYTHON = re.compile(r"^python(?:\d+(?:\.\d+)*)?$")
+_PY_FLAGS = re.compile(r"^-[uBOIsSE]+$")
+
+
+def _drop_uv_flags(segment: str, before: str) -> str:
+    """Drop ``uv run`` flags (and their values) so the command itself leads."""
+    if not re.match(r"^uv\s+run(?:\s|$)", before):
+        return segment
+    tokens = segment.split()
+    while tokens and tokens[0].startswith("-"):
+        flag = tokens.pop(0)
+        if flag == "--":
+            break
+        if flag in _UV_VALUE_FLAGS and tokens and "=" not in flag:
+            tokens.pop(0)
+    return " ".join(tokens)
+
+
+def _reduce_interpreter(segment: str) -> str:
+    """Reduce an interpreter path/version to ``python`` and drop its safe flags."""
+    tokens = segment.split()
+    if not tokens:
+        return segment
+    base = tokens[0].rsplit("/", 1)[-1]
+    if not _PYTHON.match(base):
+        return segment
+    rest = tokens[1:]
+    while rest and _PY_FLAGS.match(rest[0]):
+        rest.pop(0)
+    return " ".join(["python", *rest])
+
+
+def _unquote(segment: str) -> str:
+    """Remove one pair of matching outer quotes, or unbalanced edge quotes."""
+    if len(segment) > 1 and segment[0] == segment[-1] and segment[0] in "'\"":
+        return segment[1:-1]
+    quotes = segment.count("'") + segment.count('"')
+    return segment.strip("'\"") if quotes == 1 else segment
+
 
 def _segments(command: str) -> list[str]:
-    """Normalize command segments and remove leading execution wrappers."""
+    """Normalize command segments and remove leading execution wrappers.
+
+    Redirections are removed, the command is split on ``&& || ; | &`` and
+    newlines, then each segment loses leading wrappers (``VAR=value``, ``env``,
+    ``time``, ``nohup``, ``uv run``, ``poetry run`` ...) and its interpreter is
+    reduced to ``python``.
+    """
     segments = []
+    command = _REDIRECT.sub(" ", command)
     # shortcut: separators inside quotes also split; use shell parsing if needed.
     for raw_segment in re.split(r";|&&|\|\||\||&|\n", command):
-        segment = " ".join(raw_segment.split()).strip("'\"")
+        segment = _unquote(" ".join(raw_segment.split()))
+        segment = segment.lstrip("({ ").rstrip("}) ")
         while segment:
-            stripped = re.sub(
-                r"^(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S*)"
-                r"|nice(?:\s+-n\s+[+-]?\d+)?"
-                r"|nohup|env|time|setsid|exec|command|(?:bash|sh)\s+-c)(?:\s+|$)",
-                "",
-                segment,
-                count=1,
-            ).strip("'\"")
+            match = _WRAPPER.match(segment)
+            if match is None:
+                break
+            stripped = _unquote(
+                _drop_uv_flags(segment[match.end():], match.group(0)),
+            ).lstrip("({ ")
             if stripped == segment:
                 break
             segment = stripped
-        segments.append(segment)
+        segments.append(_reduce_interpreter(segment))
     return segments
 
 
@@ -43,11 +106,11 @@ def record(event: dict[str, object], cfg: Config, ledger: Ledger) -> Record | No
         return None
     command = inputs.get("command")
     if not isinstance(command, str) or not any(
-        fnmatchcase(segment, pattern)
-        or fnmatchcase(segment, pattern + " *")
-        or segment == pattern
-        or segment.startswith(pattern + " ")
-        for segment in _segments(command)
+        fnmatchcase(candidate, pattern)
+        or fnmatchcase(candidate, pattern + " *")
+        or candidate == pattern
+        or candidate.startswith(pattern + " ")
+        for candidate in (" ".join(command.split()), *_segments(command))
         for pattern in cfg.trial_patterns
     ):
         return None

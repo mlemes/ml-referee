@@ -9,12 +9,19 @@ from pathlib import Path
 from ml_referee.config import ConfigError, load_config
 from ml_referee.harness import (
     HARNESSES,
+    _strings,
     detect_harness,
     format_decision,
     format_post_ack,
     normalize,
 )
-from ml_referee.policy import Decision, Policy, build_policy, decide
+from ml_referee.policy import (
+    Decision,
+    Policy,
+    build_policy,
+    decide,
+    decide_without_config,
+)
 
 
 def _decide_event(event: dict[str, object], policy: Policy) -> Decision:
@@ -50,24 +57,86 @@ def _decide_event(event: dict[str, object], policy: Policy) -> Decision:
     return Decision(allow=True, reason="No sealed store access")
 
 
-def _config_root(name: str, raw: dict[str, object]) -> str | None:
-    """Return the directory to search for ``.ml-referee.toml`` (never a tool arg)."""
-    if name == "agy":
-        ws = raw.get("workspacePaths")
-        if isinstance(ws, list) and ws and isinstance(ws[0], str) and ws[0]:
-            return ws[0]
-        return str(Path.cwd())
-    if name == "devin":
-        return os.environ.get("DEVIN_PROJECT_DIR") or str(Path.cwd())
+_ROOT_LIST_KEYS = (
+    "workspacePaths",
+    "workspace_paths",
+    "workspaceRoots",
+    "workspace_roots",
+    "roots",
+)
+_ROOT_STR_KEYS = (
+    "workspace_root",
+    "workspaceRoot",
+    "project_dir",
+    "projectDir",
+    "project_root",
+    "projectRoot",
+    "workspace",
+    "root",
+)
+
+
+def _config_roots(name: str, raw: dict[str, object]) -> list[str]:
+    """Return directories to search for ``.ml-referee.toml``, most trusted first.
+
+    Harness-provided roots come before the payload ``cwd``; none of them is a
+    tool argument.
+    """
+    roots: list[str] = []
+    if name == "claude":
+        roots.append(os.environ.get("CLAUDE_PROJECT_DIR", ""))
+    elif name == "devin":
+        roots.append(os.environ.get("DEVIN_PROJECT_DIR", ""))
+    for key in _ROOT_LIST_KEYS:
+        value = raw.get(key)
+        if isinstance(value, list):
+            roots.extend(item for item in value if isinstance(item, str))
+    roots.extend(
+        value for key in _ROOT_STR_KEYS if isinstance(value := raw.get(key), str)
+    )
+    if name in {"agy", "devin"}:
+        roots.append(str(Path.cwd()))
     cwd = raw.get("cwd")
-    return cwd if isinstance(cwd, str) and cwd else None
+    if isinstance(cwd, str):
+        roots.append(cwd)
+    return [root for root in roots if root]
+
+
+def _find_config(roots: list[str]) -> tuple[Path, Path] | None:
+    """Return ``(config, workspace)`` for the first root that has a config."""
+    for root in roots:
+        workspace = Path(root).resolve()
+        for directory in (workspace, *workspace.parents):
+            config = directory / ".ml-referee.toml"
+            try:
+                config.lstat()
+            except FileNotFoundError:
+                continue
+            return config, directory
+    return None
+
+
+def _finish(name: str, events: list[dict[str, object]], decision: Decision) -> Decision:
+    """Turn an allow into the post acknowledgement agy expects."""
+    if (
+        decision.allow
+        and name == "agy"
+        and all(event.get("hook_event_name") == "PostToolUse" for event in events)
+    ):
+        # Policy ran and allowed; agy's post phase expects an empty object.
+        return Decision(allow=True, reason="post")
+    return decision
 
 
 def _evaluate(  # noqa: PLR0911, C901
     harness: str | None,
     raw: object,
 ) -> tuple[str, Decision]:
-    """Return ``(harness, decision)``; allow when no config exists."""
+    """Return ``(harness, decision)``.
+
+    With a config, the full policy applies. Without one, the config-free
+    store-root rules apply and everything else is allowed.
+    """
     name = harness or detect_harness({}, os.environ)
     if isinstance(raw, dict) and harness is None:
         name = detect_harness(raw, os.environ)
@@ -75,34 +144,46 @@ def _evaluate(  # noqa: PLR0911, C901
     if not isinstance(raw, dict):
         return name, malformed
     try:
-        cwd = _config_root(name, raw)
-        if cwd is None:
+        roots = _config_roots(name, raw)
+        if not roots:
             return name, malformed
-        workspace = Path(cwd).resolve()
-        for directory in (workspace, *workspace.parents):
-            config = directory / ".ml-referee.toml"
-            try:
-                config.lstat()
-            except FileNotFoundError:
-                continue
+        found = _find_config(roots)
+        try:
             events = normalize(name, raw)
-            if not events:
+        except ValueError:
+            if found is not None:
                 return name, malformed
-            policy = build_policy(load_config(config), directory)
-            for event in events:
-                decision = _decide_event(event, policy)
-                if not decision.allow:
-                    return name, decision
-            if name == "agy" and all(
-                event.get("hook_event_name") == "PostToolUse" for event in events
-            ):
-                # Policy ran and allowed; agy's post phase expects an empty object.
-                return name, Decision(allow=True, reason="post")
-            return name, Decision(allow=True, reason="No sealed store access")
+            # Unparseable without a config: deny only if it names the store.
+            strings = _strings(raw)
+            events = [
+                {
+                    "tool_name": "Other",
+                    "tool_input": {"strings": strings},
+                    "cwd": root,
+                }
+                for root in roots
+            ]
+        if not events:
+            return name, malformed
+        if found is None:
+            return name, _finish(name, events, decide_without_config(events))
+        config, directory = found
+        policy = build_policy(load_config(config), directory)
+        # A config only protects its own store; the store-root rules also
+        # cover every other project store (for example behind a decoy config).
+        extra = decide_without_config(events)
+        if not extra.allow:
+            return name, extra
+        for event in events:
+            decision = _decide_event(event, policy)
+            if not decision.allow:
+                return name, decision
+        return name, _finish(
+            name, events, Decision(allow=True, reason="No sealed store access"),
+        )
     except (ValueError, OSError, RuntimeError, ConfigError) as exc:
         reason = f"Guard cannot validate event: {exc}"
         return name, Decision(allow=False, reason=reason)
-    return name, Decision(allow=True, reason="No config")
 
 
 def main(argv: list[str] | None = None) -> int:

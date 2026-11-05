@@ -319,3 +319,75 @@ def test_main_claude_post_tool_use_exit_code_recorded(
     assert len(records) == 1
     assert records[0].payload["exit_code"] == code
     assert records[0].payload["failed"] is failed
+
+
+EVAL_PATTERN = ("python evaluate.py*",)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/tmp/mlr-xp/venv/bin/python3 evaluate.py > run.log",
+        "uv run python evaluate.py",
+        "uv run --with pandas --python 3.12 python evaluate.py",
+        "uv run -q python3 evaluate.py",
+        "poetry run python evaluate.py",
+        ".venv/bin/python evaluate.py",
+        "python3.12 evaluate.py --fast",
+        "cd /work && python3 evaluate.py 2>&1 | tee log",
+        "FOO=1 BAR='a b' env python evaluate.py",
+        "time nohup /usr/bin/python3 evaluate.py &> out.log",
+        "cd x; python -u evaluate.py >> run.log 2>&1",
+        "(cd /work && ./.venv/bin/python evaluate.py)",
+        "python evaluate.py\npython other.py",
+        "make data || .venv/bin/python3.11 evaluate.py",
+        'bash -lc "python evaluate.py > out.log"',
+        "/usr/bin/env python3 evaluate.py",
+        "/usr/bin/time -p python evaluate.py",
+        "uv run -- python evaluate.py",
+        "{ python -uB evaluate.py; }",
+        'python evaluate.py --cfg "a b.yaml" < in.txt',
+    ],
+)
+def test_trial_pattern_matches_normalized_command(
+    tmp_path: Path, command: str,
+) -> None:
+    cfg, ledger = _setup(tmp_path)
+    cfg = dataclasses.replace(cfg, trial_patterns=EVAL_PATTERN)
+    assert record(_event(command), cfg, ledger) is not None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo python evaluate.py",
+        "cat evaluate.py",
+        "pip install evaluate",
+        "grep -n python evaluate.py",
+        "echo hi > python evaluate.py",
+        "python evaluate_other.py",
+        "vim evaluate.py && ls",
+        "uv run pytest evaluate.py",
+        "uv pip install evaluate",
+        "cd python && ls evaluate.py",
+        "/tmp/venv/bin/pip install evaluate.py",
+    ],
+)
+def test_trial_pattern_negative_normalized_cases(
+    tmp_path: Path, command: str,
+) -> None:
+    cfg, ledger = _setup(tmp_path)
+    cfg = dataclasses.replace(cfg, trial_patterns=EVAL_PATTERN)
+    assert record(_event(command), cfg, ledger) is None
+
+
+def test_trial_pattern_raw_command_still_matches(tmp_path: Path) -> None:
+    cfg, ledger = _setup(tmp_path)
+    cfg = dataclasses.replace(cfg, trial_patterns=("make eval*",))
+    assert record(_event("make eval --jobs 4"), cfg, ledger) is not None
+
+
+def test_env_unset_wrapper_matches(tmp_path: Path) -> None:
+    cfg, ledger = _setup(tmp_path)
+    cfg = dataclasses.replace(cfg, trial_patterns=EVAL_PATTERN)
+    assert record(_event("env -u FOO python evaluate.py"), cfg, ledger) is not None

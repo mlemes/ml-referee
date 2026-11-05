@@ -33,24 +33,26 @@ This document describes the components of `ml-referee` v0.1 as implemented. Upda
 
 ## Guard behavior
 
-- **Fail closed.** `policy.decide` denies a malformed event, a non-string input, and any exception. `hooks.guard` denies when the event or the config cannot be validated. It allows the call when no `.ml-referee.toml` exists above the working directory.
+- **Fail closed.** `policy.decide` denies a malformed event, a non-string input, and any exception. `hooks.guard` denies when the event or the config cannot be validated. With no `.ml-referee.toml` found, it applies only the store-root rules below and allows the rest.
+- **Config discovery.** The guard looks for `.ml-referee.toml` from the harness root first (`CLAUDE_PROJECT_DIR`, `DEVIN_PROJECT_DIR`, agy `workspacePaths`), then payload workspace or root fields, then the payload `cwd`, walking up from each. A `cwd` outside the workspace tree therefore no longer hides the config.
+- **Store-root rules without a config.** `policy.decide_without_config` denies a resolved `cwd` inside `${XDG_DATA_HOME:-~/.local/share}/ml-referee/` (or the data directory that holds it, or a symlink into it), text that names the store root, and path arguments that resolve inside it. It allows the rest. The same rules also run when a config is found, so one config never unlocks the stores of other projects.
 - **Marker checks.** `Policy.substring_touches` checks the store path, its parents, `.local/share`, `XDG_DATA_HOME`, and the store ancestors on the unstripped text, in both the raw and the punctuation-stripped form.
 - **Bare `ml-referee` check.** Before this one check, the guard removes the workspace path and `.ml-referee.toml` in one pass, at path-component boundaries. Workspaces whose path contains `ml-referee` therefore work. The guard skips the removal when the store is inside the workspace.
 - **Token checks.** `Policy.touches_sealed` also resolves each shell token with symlink-aware path resolution and expands globs. If shell parsing fails, it falls back to whitespace splitting.
-- **Working directory.** The guard denies an event whose `cwd` is inside the store or at a store ancestor.
+- **Working directory.** The guard denies an event whose `cwd` resolves inside the store or into a symlink that points there. With a config, it also denies a `cwd` at a store ancestor that is not a workspace ancestor. A `cwd` at an ancestor that is also a workspace ancestor (such as `$HOME`) is not denied. Relative-path reads from there (`cat .local/share/ml-referee/x`, `cd ~ && cat .local/share/ml-referee/x`) are caught by the normalized-substring rules.
 - **Write and Edit content.** The guard applies the substring rules only to `Write` content and `Edit` `new_string`. It does no shell parsing there.
 - **Config protection.** The guard denies `Write` and `Edit` of `.ml-referee.toml`. It denies a `Bash` command that names the file unless the command is a single read-only `cat`, `head`, `tail`, `less`, `ls`, `grep`, `wc`, or `stat`.
 - **CLI exception.** A single `ml-referee ...` or `python -m ml_referee ...` command is checked without its program name. The agent can therefore run the CLI itself and get at most `holdout_budget` sealed looks.
 - **CLI path.** The guard denies a CLI path such as `<workspace>/.venv/bin/ml-referee` by design. Use `ml-referee` on `PATH` or `python -m ml_referee`.
 - **Known over-block.** The guard denies a quoted concatenation of the config name in `Write` content.
-- **Accepted residuals.** `find ~ -name 'holdout.parquet' -exec cat`, glob-obfuscated `cd` chains, and inline Python that walks `~` pass the guard.
+- **Accepted residuals.** Shell variable splitting and base64 or hex decoding that rebuild the store path at run time, `find ~ -name 'holdout.parquet' -exec cat`, glob-obfuscated `cd` chains, and inline Python that walks `~` pass the guard.
 - **Fail-open on missing interpreter.** If `python3` is missing, the hook process crashes. Claude Code treats that crash as non-blocking, so the guard fails open.
 
 ## Recorder behavior
 
 The recorder records only when the project is sealed, that is, when `manifest.json` exists in the store. It never creates the store.
 
-The recorder splits a command into segments on `;`, `&&`, `||`, `|`, `&`, and newlines. For each segment it strips leading environment assignments and the wrappers `nohup`, `env`, `time`, `nice`, `setsid`, `exec`, `command`, and `sh -c` or `bash -c`. It then matches each configured `trial_patterns` entry per segment. A command outside the patterns is invisible to the ledger. Attack A7 reports 0 percent blocked for this reason.
+The recorder splits a command into segments on `;`, `&&`, `||`, `|`, `&`, and newlines. It first removes redirections (`> file`, `2>&1`). For each segment it strips leading environment assignments and the wrappers `nohup`, `env`, `time`, `nice`, `setsid`, `exec`, `command`, `sh -c`, `bash -c`, `uv run` (with flags), `poetry run`, and `pipenv run`, and it reduces an interpreter path or version (`.venv/bin/python`, `python3.12`) to `python`. It then matches each configured `trial_patterns` entry against the raw command and against every normalized segment. A command outside the patterns is invisible to the ledger. Attack A7 reports 0 percent blocked for this reason.
 
 ## Runner behavior
 

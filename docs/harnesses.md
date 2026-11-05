@@ -45,6 +45,7 @@ The following table lists the install output, the trust step, the fail mode, and
 - Devin and agy fail open when a hook crashes or times out.
 - Codex hooks do nothing until you trust them in `/hooks`.
 - Unknown and unmapped tools (MCP tools, for example) become `Other` events. The guard checks every string as a candidate path (config file, store) and as content, and it validates the event `cwd`. The adapter also re-scans any string key it does not map, such as extra or shadowed aliases.
+- Config discovery does not depend on the payload `cwd` alone. The guard uses the harness root when present (`CLAUDE_PROJECT_DIR` for Claude Code, `DEVIN_PROJECT_DIR` for Devin, `workspacePaths` for agy), then payload workspace or root fields, then a walk up from `cwd`. Codex and opencode send only `cwd`, so for them a `cwd` outside the workspace finds no config and gets the config-free store-root rules (deny any call whose resolved `cwd`, path argument, or text names the store root, allow the rest).
 - Hooks are a policy layer, not a sandbox. An agent with unrestricted shell access can route around them.
 - The hook command runs the Python interpreter that the installer records. That interpreter must be able to import `ml_referee`. If it cannot, the hook exits with code 1 and the harness can fail open.
 

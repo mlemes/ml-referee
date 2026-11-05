@@ -7,7 +7,7 @@ import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
-from ml_referee.config import Config, store_dir
+from ml_referee.config import Config, store_dir, store_root
 
 
 def _expand(value: str, variables: dict[str, str]) -> str:
@@ -239,3 +239,115 @@ def decide(event: dict[str, object], policy: Policy) -> Decision:  # noqa: C901,
     except (OSError, RuntimeError, ValueError):
         return denied
     return Decision(allow=True, reason="No sealed store access")
+
+
+_NO_CONFIG_DENIED = Decision(
+    allow=False, reason="Access to the ml-referee store root denied",
+)
+_STORE_TEXT = re.compile(
+    r"\.local/share/ml-referee|XDG_DATA_HOME\}?/ml-referee",
+)
+
+
+def _string_values(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for item in value.values() for s in _string_values(item)]
+    if isinstance(value, (list, tuple)):
+        return [s for item in value for s in _string_values(item)]
+    return []
+
+
+def _inside(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def _squash(text: str) -> str:
+    """Collapse repeated slashes and ``/./`` segments in literal text."""
+    return re.sub(r"/(?:\.?/)+", "/", text)
+
+
+def _text_names_store(text: str, root: Path, cwd: Path) -> bool:
+    """Return True if literal text names the store root (also from an ancestor cwd)."""
+    markers = [str(root), str(store_root())]
+    if cwd in root.parents:
+        # Relative spelling of the store root from an ancestor cwd.
+        markers.append(str(root.relative_to(cwd)))
+    for value in (text, re.sub(r"[^A-Za-z0-9_./~$-]", "", text)):
+        squashed = _squash(value)
+        if any(
+            _STORE_TEXT.search(item) or any(marker in item for marker in markers)
+            for item in (value, squashed)
+        ):
+            return True
+    return False
+
+
+def _token_in_store(token: str, root: Path, cwd: Path) -> bool:
+    """Return True if a path token, or a glob expansion of it, lies in the store."""
+    for pattern in {token, token.split("=", 1)[-1]}:
+        if pattern and _pattern_in_store(pattern, root, cwd):
+            return True
+    return False
+
+
+def _pattern_in_store(pattern: str, root: Path, cwd: Path) -> bool:
+    try:
+        expanded = _expand(pattern, dict(os.environ))
+        if not glob.has_magic(expanded):
+            return _inside(_resolve(expanded, cwd), root)
+        # Walk the filesystem only when the static prefix can reach the store.
+        parts = expanded.split("/")
+        static = []
+        for part in parts:
+            if glob.has_magic(part):
+                break
+            static.append(part)
+        prefix = _resolve("/".join(static) or ".", cwd)
+        if _inside(prefix, root):
+            return True
+        if prefix != root and prefix not in root.parents:
+            return False
+        return any(
+            _inside(Path(match).resolve(), root)
+            for match in glob.iglob(str(cwd / expanded))  # noqa: PTH207
+        )
+    except OSError:
+        # A token too long to be a real path cannot name a store entry.
+        return False
+
+
+_TOKEN_SPLIT = re.compile(r"[\s;&|()<>\"'`]+")
+
+
+def decide_without_config(events: list[dict[str, object]]) -> Decision:
+    """Apply the config-free store-root rules to canonical events.
+
+    Deny when a resolved cwd is inside the store root (or is the XDG data
+    directory that holds it), when literal text names the store root, or when
+    a resolved path argument lies inside it. Everything else is allowed.
+    """
+    try:
+        root = store_root().resolve()
+        for event in events:
+            cwd_value = event.get("cwd")
+            if not isinstance(cwd_value, str) or not cwd_value:
+                return Decision(allow=False, reason="Malformed hook event")
+            cwd = _resolve(cwd_value, Path.cwd())
+            if _inside(cwd, root) or cwd == root.parent:
+                return _NO_CONFIG_DENIED
+            for text in _string_values(event.get("tool_input")):
+                if _text_names_store(text, root, cwd):
+                    return _NO_CONFIG_DENIED
+                for candidate in (text, re.sub(r"[^A-Za-z0-9_./~$-]", "", text)):
+                    try:
+                        tokens = shlex.split(candidate, posix=True)
+                    except ValueError:
+                        tokens = candidate.split()
+                    tokens.extend(_TOKEN_SPLIT.split(candidate))
+                    if any(_token_in_store(t, root, cwd) for t in tokens):
+                        return _NO_CONFIG_DENIED
+    except (OSError, RuntimeError, ValueError):
+        return _NO_CONFIG_DENIED
+    return Decision(allow=True, reason="No config")
