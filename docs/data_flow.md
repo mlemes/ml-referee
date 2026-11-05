@@ -63,7 +63,7 @@ With `--holdout-file PATH`, `seal.seal` validates the file first (same columns a
 ## Audit
 
 1. `cli.audit` verifies the store, then loads the workspace train file and the sealed holdout.
-2. `audit.checks` produce findings: duplicates (the label column is ignored), near duplicates (numeric features standardized with the training statistics, nearest training row per holdout row through a `cKDTree`, label ignored, counts only), entity overlap, target leakage (Spearman rank correlation for non-binary labels), and fit before split in the files you pass with `--sources`.
+2. `audit.checks` produce findings: duplicates (the label column is ignored), near duplicates (numeric features standardized with the training statistics, nearest training row per holdout row through a `cKDTree`, label ignored, counts only), entity overlap, target leakage (Spearman rank correlation for non-binary labels: high at 0.98, medium noisy-copy finding at 0.83 with a lower-bound guard), and fit before split in the files you pass with `--sources`.
 3. `cli.audit` prints one JSON line per finding. It exits 3 when any finding is high severity.
 4. The `ml-reviewer` agent reads the diff and the findings and reports without editing files.
 5. For each `--against PATH` file, `cli.audit` also compares the workspace train file with that file (label dropped, group column from the config), runs the duplicate, near-duplicate, and entity-overlap checks, and tags each finding with `[against=<basename>]`. A missing or unreadable file exits 1 before `claim` spends any holdout budget.
