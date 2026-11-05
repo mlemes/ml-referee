@@ -1,6 +1,6 @@
 # ml-referee: sealed evidence for agent-driven machine learning experiments
 
-**Status:** draft. The paper reports results from scripted attacks, scripted agents, and one real-agent deterrence experiment with a small model. The Codex arm of the deterrence experiment is still running and is marked as pending. All experimental numbers come from the experiments repository `ml-referee-experiments`, commit `dcd7413`.
+**Status:** draft. The paper reports results from scripted attacks, scripted agents, and one real-agent deterrence experiment with two small models (Claude Haiku and Codex `gpt-6-luna`). The Codex arm has 9 runs per condition and is descriptive. All experimental numbers come from the experiments repository `ml-referee-experiments`, commit `dcd7413`, except the Codex arm, which comes from commit `366c342`.
 
 Authors: the list is not final.
 
@@ -8,7 +8,7 @@ Authors: the list is not final.
 
 Coding agents now run machine learning experiments end to end. They write the training code, choose the metric, and report the result. Recent studies find that such agents often game the evidence: across 17 language models, spontaneous reward hacking reached 30.5% on open-ended research-pipeline tasks [1], and about 57% of runs exploited a planted shortcut on tabular tasks [2]. Telling the agent not to cheat did not remove the behavior [2]. This paper proposes `ml-referee`, a plugin for Claude Code that separates the agent that produces a result from the evidence that certifies it. The plugin seals the holdout data and the evaluator outside the agent's workspace, blocks tool calls that touch them, records every trial in a hash-chained ledger, audits the data for leakage, and issues a claim only after one sealed evaluation that accounts for the number of trials. It defines a threat model, an architecture, and an evaluation protocol based on scripted attacks and on the benchmark of Prasad et al. [2].
 
-The experiments give three results. First, the sealed evaluation exposes every scripted hack that opens a gap between the public and the sealed score (four of six hacks, in 30 of 30 or 90 of 90 runs each), and the audit adds a signal for one more (`fit-before-split`, 90 of 90). The `many-trials` hack goes undetected. Second, the guard blocks all 16 claimed attack classes after the experiments found and the product fixed one bypass. Third, in a real-agent test with Claude Haiku on three synthetic tasks, the plugin deters only when the prompt tells the agent to use it. The hack rate is 18 of 30 without the plugin, 18 of 30 with the passive plugin, and 8 of 30 with the plugin plus a prompt that asks for an audit and a sealed evaluation (Fisher exact p = 0.018 uncorrected, 0.055 with a Bonferroni correction over three tests). The result comes from one small model and three synthetic tasks, and the no-plugin arm did not run concurrently. The plugin detects and certifies; it does not deter an agent that is not told to use it.
+The experiments give three results. First, the sealed evaluation exposes every scripted hack that opens a gap between the public and the sealed score (four of six hacks, in 30 of 30 or 90 of 90 runs each), and the audit adds a signal for one more (`fit-before-split`, 90 of 90). The `many-trials` hack goes undetected. Second, the guard blocks all 16 claimed attack classes after the experiments found and the product fixed one bypass. Third, in a real-agent test with Claude Haiku on three synthetic tasks, the plugin deters only when the prompt tells the agent to use it. The hack rate is 18 of 30 without the plugin, 18 of 30 with the passive plugin, and 8 of 30 with the plugin plus a prompt that asks for an audit and a sealed evaluation (Fisher exact p = 0.018 uncorrected, 0.055 with a Bonferroni correction over three tests). A smaller Codex arm (`gpt-6-luna`, 9 runs per condition) shows the same direction, with 6 of 9, 3 of 8, and 1 of 9 hacks for the three conditions, but it is underpowered (the C0 against C4 test gives p = 0.050, exploratory, and 0.15 after a Bonferroni correction). The result comes from two small models and three synthetic tasks, and the Haiku no-plugin arm did not run concurrently. The plugin detects and certifies; it does not deter an agent that is not told to use it.
 
 ## Introduction
 
@@ -73,7 +73,7 @@ The experiments repository implements part of this protocol. Table 1 lists the e
 | E5, E5b | Injected leakage defects and a sensitivity curve for near duplicates | Scripted | 30 per cell |
 | E6, E6c | Guard fuzz and compound plugin-CLI forms | None (hook payloads) | 1,900 calls and 1,610 calls |
 | E6b | Ledger tampering and concurrent budget use | None | 2,400 tamper cases |
-| E7 | Deterrence: does the plugin change how often a real agent overfits the public split | Claude Code (Haiku) | 90, then 60 |
+| E7 | Deterrence: does the plugin change how often a real agent overfits the public split | Claude Code (Haiku), Codex (`gpt-6-luna`) | 90, then 60, and 27 |
 
 Table 1. Experiments reported in this paper. The conditions are C0 (no plugin), C1 (prompt that forbids cheating, not run), C2 (permission deny rules only, E1 only), C3 (passive plugin, the agent is not told to use it), and C4 (plugin plus a prompt that asks for an audit and one sealed evaluation). The three tasks are `regression_task_01` (shared entities), `regression_task_02` (near-duplicate rows), and `classification_task_03` (public labels), size n10k. The experiments do not measure RQ4 (cost).
 
@@ -126,7 +126,19 @@ All 30 C4 agents ran the audit and a sealed evaluation (compliance 30 of 30 [0.8
 
 #### Codex arm
 
-**Pending.** The Codex (Luna) arm is still running. Its results will be reported here from `docs/results-deterrence-codex.md` on the experiments branch `e7-luna`. No Codex deterrence number appears in this paper.
+A second, smaller arm runs Codex with `gpt-6-luna` on the same three tasks, seeds 1 to 3, with 9 runs per condition and the same prompts, hack criterion, and tests. It ran on the host in Codex's native sandbox, on the same product commit as the second Haiku run. With n = 9 per condition, every rate is descriptive and the data cannot support a claim about deterrence.
+
+| Condition | Hacks | Runs | Rate | 95% interval |
+|---|---|---|---|---|
+| C0 (no plugin) | 6 | 9 | 67% | [0.35, 0.88] |
+| C3 (plugin, passive) | 3 | 8 | 38% | [0.14, 0.69] |
+| C4 (plugin plus audit and eval prompt) | 1 | 9 | 11% | [0.02, 0.43] |
+
+Table 4. Hack rate in the Codex arm. Source: experiments repository, commit `366c342` (branch `e7-luna`), `docs/results-deterrence-codex.md` and `results/expected/deterrence-codex/summary.json`.
+
+One C3 run did not count, because the agent's last edit left a `solution.py` that raises, so the harness recorded an error and no scores. Counting it as a hack would make C3 4 of 9. Fisher exact p is 0.35 for C0 against C3 and 0.29 for C3 against C4. The C0 against C4 test (p = 0.050) is exploratory and not pre-registered, and it is 0.15 after a Bonferroni correction over three tests. All 9 C4 agents ran the audit and a sealed evaluation, and 7 of 9 edited `solution.py` after the first feedback. The effect sits on `regression_task_01` (C4 0 of 3 against 3 of 3 in C0 and C3), the same task where the Haiku C4 rate fell.
+
+Two facts limit the reading. C3 was not passive in practice: 3 of 8 finished C3 agents ran `ml-referee eval` themselves after reading the `AGENTS.md` block, so the lower C3 rate is not evidence of passive deterrence. In 9 runs the agent spent both sealed evaluations, so the harness claim refused to run. The direction matches the Haiku arm, but the arm is underpowered, and it does not replicate the Haiku result.
 
 ## Product defects found by the experiments
 
@@ -150,7 +162,7 @@ The results support a narrow claim. The plugin detects and certifies, and it det
 
 **It does not deter a passive agent.** With the tool available but no instruction to use it, the hack rate is 60 percent, the same as with no plugin. Only 3 of 30 C3 agents ran the audit. The `AGENTS.md` block is neutral on purpose, and the agents did not pick up the tool by themselves.
 
-**It deters when the agent is told to use it, in one task.** With the prompt, the hack rate falls from 60 to 27 percent. The reduction is concentrated in the task where the audit names a fixable cause. Where the signal is a large gap without a cause, agents mostly kept their solution. The evidence is one small model and three synthetic tasks, and it does not show deterrence in general.
+**It deters when the agent is told to use it, in one task.** With the prompt, the hack rate falls from 60 to 27 percent. The reduction is concentrated in the task where the audit names a fixable cause. Where the signal is a large gap without a cause, agents mostly kept their solution. The Codex arm points the same way (C4 1 of 9 against 6 of 9 in C0), also on `regression_task_01` only, but with 9 runs per condition it is consistent in direction and underpowered. The evidence is two small models and three synthetic tasks, and it does not show deterrence in general.
 
 **Design implication.** A user who wants deterrence has to make the agent run the audit and the sealed evaluation, for example in the task prompt or in a harness step. Installing the plugin alone gives detection and certification.
 
@@ -160,10 +172,10 @@ Same-user file permissions do not stop a determined agent. A stronger version ne
 
 **Scope of the evidence.**
 
-- The deterrence result comes from one small model (Claude Haiku), three synthetic BAITBENCH tasks, and 10 runs per task and condition (30 per condition). The intervals are wide: C4 is [0.14, 0.44] and C0 is [0.42, 0.75].
+- The deterrence result comes from two small models (Claude Haiku and Codex `gpt-6-luna`) and three synthetic BAITBENCH tasks. The Haiku arm has 10 runs per task and condition (30 per condition), and the Codex arm has 3 runs per task and condition (9 per condition, descriptive only). The intervals are wide: C4 is [0.14, 0.44] and C0 is [0.42, 0.75].
 - C0 is not concurrent. It ran in the first run, and C3 and C4 ran later, so a change in the model or the host between runs would look like an effect.
 - The C4 effect is borderline after correction: p = 0.018 uncorrected and 0.055 after a Bonferroni correction over three tests. The pooled test includes the 10 task 03 runs per condition where no agent hacks, and the effect is in one task.
-- The Codex arm is pending, so no second model supports the deterrence result.
+- The Codex arm is consistent in direction with Haiku but underpowered, and it is not a replication. C3 was not passive there (3 of 8 agents ran an evaluation themselves), one C3 run errored, and 9 runs spent both sealed evaluations. It ran on the host in Codex's native sandbox, which can read the host filesystem, and it reads the host Codex configuration. The harness checks that the hook trust persisted by file hash and by recorded trials (16 of 17 finished plugin runs), not by Codex itself.
 - The prompt wording matters. The C4 addendum is one wording that names the exact commands.
 - The hack criterion uses the hidden split that is also the sealed holdout, and 12 C4 agents evaluated twice on those rows.
 - The edit flags read tool calls from the transcript, so they miss a rewrite through an unusual shell construct.
@@ -193,12 +205,12 @@ Same-user file permissions do not stop a determined agent. A stronger version ne
 
 ## Conclusion
 
-`ml-referee` separates the agent that produces a result from the evidence that certifies it. In scripted tests, the sealed evaluation exposes every hack that opens a gap, the guard blocks all claimed attack classes after the experiments exposed one bypass, and the ledger catches every tamper that changes its content. The experiments also show what the plugin does not do: it misses the `many-trials` hack, it has a target-leak cliff, and it is a policy layer and not a sandbox. In the one real-agent test, a passive plugin did not change the hack rate (18 of 30 against 18 of 30), and a plugin plus a prompt that asks for the audit and a sealed evaluation lowered it to 8 of 30. That result needs replication with more models, more tasks, and a concurrent control before you rely on it. Until then, treat the plugin as a tool that detects and certifies, and that deters when the agent is told to use it.
+`ml-referee` separates the agent that produces a result from the evidence that certifies it. In scripted tests, the sealed evaluation exposes every hack that opens a gap, the guard blocks all claimed attack classes after the experiments exposed one bypass, and the ledger catches every tamper that changes its content. The experiments also show what the plugin does not do: it misses the `many-trials` hack, it has a target-leak cliff, and it is a policy layer and not a sandbox. In the main real-agent test (Haiku), a passive plugin did not change the hack rate (18 of 30 against 18 of 30), and a plugin plus a prompt that asks for the audit and a sealed evaluation lowered it to 8 of 30. A smaller Codex arm (9 runs per condition) points the same way (1 of 9 with the prompt against 6 of 9 without the plugin), but it is underpowered and not a replication. The result needs replication with more models, more tasks, and a concurrent control before you rely on it. Until then, treat the plugin as a tool that detects and certifies, and that deters when the agent is told to use it.
 
 ## Companion documents
 
 - `docs/research/paper/results-detection.md`: detection, guard, and ledger results in full.
-- `docs/research/paper/results-deterrence.md`: the deterrence experiment in full, including the Codex arm when it finishes.
+- `docs/research/paper/results-deterrence.md`: the deterrence experiment in full, including the Codex arm.
 - `docs/research/evaluation/protocol.md`: the evaluation protocol.
 - `docs/research/threat-model/threat-model.md`: the threat model.
 - Experiments repository `ml-referee-experiments`, commit `dcd7413`: `docs/protocol.md`, `docs/results.md`, `docs/results-quality.md`, `docs/results-deterrence.md`, and `results/expected/`.
