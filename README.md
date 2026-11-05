@@ -50,6 +50,7 @@ Pass a single harness name, such as `--harness codex`, to install only that one.
 - Hooks are a policy layer, not a sandbox. An agent with unrestricted shell access can route around them.
 - The audit finds exact duplicates, near duplicates, shared entities, near-perfect label proxies, and fit before split. The near-duplicate check compares standardized numeric features and flags only holdout rows that sit closer to a training row than almost all training rows sit to each other, so a near duplicate with large noise stays undetected.
 - Audit and claim counts reveal holdout membership to an agent that can run the CLI.
+- The guard lets the agent run `ml-referee audit`, `eval`, and `verify-ledger` inside ordinary pipelines and redirections, and denies `seal`, `claim`, and `install`. `ml-referee eval --predict-cmd "CMD"` scores a predictor on the sealed rows without showing it their labels. The predictor runs as the same user and sees the unlabeled sealed features.
 
 ## Read first
 
