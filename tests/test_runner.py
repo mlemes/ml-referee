@@ -40,6 +40,7 @@ def _setup(
     monkeypatch: pytest.MonkeyPatch,
     evaluator: str = GOOD,
     budget: int = 1,
+    reserve: int = 0,
 ) -> tuple[Config, Path]:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     work = tmp_path / "w"
@@ -52,7 +53,8 @@ def _setup(
     (work / "cfg.toml").write_text(
         '[project]\nid = "proj-r"\n\n[data]\ntrain = "data/train.csv"\n'
         'label = "y"\n\n[eval]\ncommand = "python eval.py"\nmetric = "acc"\n'
-        "higher_is_better = true\n\n[trials]\npatterns = []\n\n"
+        "higher_is_better = true\n"
+        f"claim_reserve = {reserve}\n\n[trials]\npatterns = []\n\n"
         f"[holdout]\nfraction = 0.25\nseed = 1\nbudget = {budget}\n"
     )
     cfg = load_config(work / "cfg.toml")

@@ -66,6 +66,8 @@ The sections below describe the runner. `run_predict_eval` shares the lock, budg
 
 `run_holdout_eval` verifies the store, the ledger, and the manifest before it does anything else. It takes an `flock` on `eval.lock`, checks the budget, and runs the evaluator in its own session with a minimal environment and a 60 second timeout. On timeout it kills the evaluator process group. Errors never include evaluator output. It appends an `eval` record only after the row count matches the manifest.
 
+**Claim reserve.** `eval.claim_reserve` (default 1 when `holdout.budget` is at least 2, else 0; it must be below the budget) keeps the last evaluations for the final claim. Both runner entry points take a `role` (`agent` by default, `claim` from `claim`). Under the lock, an `agent` eval is refused with "Remaining budget is reserved for the final claim" when `budget - spent <= claim_reserve`. A `claim` eval can spend the reserve. The role is stored in the `eval` ledger record. The agent cannot pass `claim`: the CLI `eval` always uses `agent`, and the guard denies the `claim` subcommand. Setting `claim_reserve = 0` restores the old behavior.
+
 ## Ledger integrity
 
 Each record holds the hash of its predecessor. `head.txt` holds the last hash, so deleting the tail of the ledger is detected. `Ledger` writes it atomically: a `0600` temporary file, then `os.replace`. If a crash leaves `head.txt` one record behind, the next `append` repairs it. Every other mismatch is an integrity failure. `head.txt` lives in the same store. A same-user agent that can write the store can forge both files. This is a known limit. Version 2 needs a separate user or a container.

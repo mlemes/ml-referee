@@ -66,7 +66,7 @@ def claim(  # noqa: PLR0913, PLR0917
     directory = store_dir(cfg)
     manifest = _verify_store(cfg, directory)
     trials = Ledger(directory / "ledger.jsonl").trial_count()
-    result = run_holdout_eval(cfg, predictions)
+    result = run_holdout_eval(cfg, predictions, role="claim")
     return build_report(
         manifest, result, trials, findings or [], validation_scores, p_value,
         higher_is_better=higher_is_better,

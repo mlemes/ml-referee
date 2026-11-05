@@ -12,6 +12,6 @@ Commands you may run, alone or in ordinary pipelines and redirections:
 - `ml-referee eval --predict-cmd "COMMAND"` runs COMMAND with `{features}` (the sealed rows without labels) and `{out}` (a one-column predictions CSV to write) and prints only the score and the row count.
 - `ml-referee verify-ledger` checks the evaluation ledger.
 
-Sealed evaluations are limited by the holdout budget, which `AGENTS.md` shows when it is known. A predict command that fails before scoring spends none. The person produces the final claim with `/ml-claim`. `seal`, `claim`, and `install` are not for the agent.
+Sealed evaluations are limited by the holdout budget, which `AGENTS.md` shows when it is known. The last `eval.claim_reserve` evaluations (default 1 when the budget is 2 or more) are reserved for the final claim, so `eval` refuses with "Remaining budget is reserved for the final claim" once only the reserve is left. A predict command that fails before scoring spends none. The person produces the final claim with `/ml-claim`. `seal`, `claim`, and `install` are not for the agent.
 
 Hooks are a policy layer, not a sandbox. You cannot treat them as operating system isolation or proof that a tool cannot bypass policy.
