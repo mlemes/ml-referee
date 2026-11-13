@@ -23,7 +23,7 @@ This document describes the components of `ml-referee` v0.1 as implemented. Upda
 | Audit | `src/ml_referee/audit/checks.py` | Deterministic leakage checks: exact duplicates, near duplicates (nearest-neighbor distance on standardized numeric features, `scipy.spatial.cKDTree`), entity overlap, target leak, and fit before split. |
 | Claim | `src/ml_referee/claim/` | Statistics (`stats.py`) and report (`report.py`). |
 | CLI | `src/ml_referee/cli.py` | `ml-referee seal` (optionally `--holdout-file` to seal an existing hidden split), `eval` (exactly one of `--predictions PATH` or `--predict-cmd CMD`), `audit` and `claim` (both accept repeatable `--against` files), `verify-ledger`, and `install`. |
-| Commands, skill, agent | `commands/`, `skills/ml-referee/`, `agents/ml-reviewer.md` | Claude Code surface: `/ml-seal`, `/ml-audit`, `/ml-claim`, a workflow skill, and a read-only reviewer. |
+| Commands, skill, agent | `commands/`, `skills/ml-referee/`, `agents/ml-reviewer.md` | Claude Code surface: `/ml-referee:ml-audit` runs an audit; `/ml-referee:ml-seal` and `/ml-referee:ml-claim` explain the owner-only terminal commands without executing them. A shared workflow skill and read-only reviewer describe the agent's permitted work. |
 | Attack bench | `bench/` | Eight scripted attacks (`bench/attacks/a1_*.py` to `a8_*.py`), a shared fixture (`bench/env.py`), and `bench/run_attacks.py`. |
 
 ## Boundaries
@@ -59,6 +59,8 @@ This document describes the components of `ml-referee` v0.1 as implemented. Upda
 ## Recorder behavior
 
 The recorder records only when the project is sealed, that is, when `manifest.json` exists in the store. It never creates the store.
+
+Codex can deliver `PostToolUse` with only a string `tool_response`, for both successful and failed shell commands. Without an authoritative integer exit code or explicit failure event, the canonical event and new trial record use `exit_code: null` and `failed: null` (unknown). `failed: false` denotes a known successful Codex outcome; `failed: true` denotes a known failure. Command output is untrusted and is never parsed to infer process status. Existing records are not rewritten: older Codex records with a null exit code and `failed: false` must not be treated as proof of success. Unknown trials still count toward selection warnings. Other harness behavior is unchanged.
 
 The recorder splits a command into segments on `;`, `&&`, `||`, `|`, `&`, and newlines. It first removes redirections (`> file`, `2>&1`). For each segment it strips leading environment assignments and the wrappers `nohup`, `env`, `time`, `nice`, `setsid`, `exec`, `command`, `sh -c`, `bash -c`, `uv run` (with flags), `poetry run`, and `pipenv run`, and it reduces an interpreter path or version (`.venv/bin/python`, `python3.12`) to `python`. It then matches each configured `trial_patterns` entry against the raw command and against every normalized segment. A command outside the patterns is invisible to the ledger. Attack A7 reports 0 percent blocked for this reason.
 

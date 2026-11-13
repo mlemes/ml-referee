@@ -116,7 +116,9 @@ def record(event: dict[str, object], cfg: Config, ledger: Ledger) -> Record | No
         return None
     if "exit_code" in event:  # canonical event
         exit_code = event["exit_code"]
-        canonical_failed = event.get("failed") is True
+        canonical_failed = event.get("failed")
+        if not isinstance(canonical_failed, bool):
+            canonical_failed = None
     else:
         response = event.get("tool_response")
         exit_code = response.get("exit_code") if isinstance(response, dict) else None
@@ -129,9 +131,15 @@ def record(event: dict[str, object], cfg: Config, ledger: Ledger) -> Record | No
     return ledger.append("trial", {
         "command": command,
         "exit_code": exit_code,
-        "failed": canonical_failed
-        or event.get("hook_event_name") == "PostToolUseFailure"
-        or (exit_code is not None and exit_code != 0),
+        "failed": (
+            True
+            if canonical_failed is True
+            or event.get("hook_event_name") == "PostToolUseFailure"
+            or (exit_code is not None and exit_code != 0)
+            else False
+            if canonical_failed is False or exit_code == 0
+            else None
+        ),
         "train_sha256": digest,
     })
 

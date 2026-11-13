@@ -1,5 +1,11 @@
 {
   "name": "ml-referee",
   "version": "0.1.0",
-  "description": "Seal holdout data, audit leakage, and record budgeted model claims."
+  "description": "Seal holdout data, audit leakage, and record budgeted model claims.",
+  "author": {
+    "name": "mlemes"
+  },
+  "homepage": "https://github.com/mlemes/ml-referee",
+  "repository": "https://github.com/mlemes/ml-referee",
+  "license": "MIT"
 }

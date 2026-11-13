@@ -220,7 +220,7 @@ def test_recorder_codex_post_without_exit_code_is_recorded(
     assert len(records) == 1
     assert records[0].payload["command"] == "python train.py --lr 1"
     assert records[0].payload["exit_code"] is None
-    assert records[0].payload["failed"] is False
+    assert records[0].payload["failed"] is None
 
 
 def test_recorder_devin_failure_marks_failed(

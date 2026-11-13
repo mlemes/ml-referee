@@ -296,7 +296,7 @@ def test_main_harness_codex_records_without_exit_code(
     records = Ledger(store_dir(cfg) / "ledger.jsonl").records()
     assert len(records) == 1
     assert records[0].payload["exit_code"] is None
-    assert records[0].payload["failed"] is False
+    assert records[0].payload["failed"] is None
 
 
 @pytest.mark.parametrize(("code", "failed"), [(1, True), (0, False)])

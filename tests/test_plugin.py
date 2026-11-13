@@ -140,7 +140,10 @@ def test_recorder_command_appends_trial(
 def test_command_files_have_frontmatter(name: str) -> None:
     fm = _frontmatter(ROOT / "commands" / f"{name}.md")
     assert fm.get("description")
-    assert fm.get("allowed-tools")
+    if name in {"ml-seal", "ml-claim"}:
+        assert fm.get("allowed-tools") == "[]"
+    else:
+        assert fm.get("allowed-tools")
 
 
 def test_skill_frontmatter() -> None:

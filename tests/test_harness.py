@@ -199,7 +199,24 @@ def test_codex_post_has_no_exit_code() -> None:
     ev = one("codex", "codex_post")
     assert ev["hook_event_name"] == "PostToolUse"
     assert ev["exit_code"] is None
-    assert ev["failed"] is False
+    assert ev["failed"] is None
+
+
+@pytest.mark.parametrize(("code", "failed"), [(0, False), (7, True)])
+def test_codex_post_with_exit_code(code: int, failed: bool) -> None:
+    raw = load("codex_post")
+    raw["tool_response"] = {"stdout": "TRAIN_FAILED\\n", "exit_code": code}
+    ev = normalize("codex", raw)[0]
+    assert ev["exit_code"] == code
+    assert ev["failed"] is failed
+
+
+def test_codex_post_tool_use_failure_without_exit_code() -> None:
+    raw = load("codex_post")
+    raw["hook_event_name"] = "PostToolUseFailure"
+    ev = normalize("codex", raw)[0]
+    assert ev["exit_code"] is None
+    assert ev["failed"] is True
 
 
 @pytest.mark.parametrize(

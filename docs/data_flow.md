@@ -4,7 +4,7 @@ This document traces data through `ml-referee` v0.1 as implemented. Update it in
 
 ## Seal
 
-1. You run `/ml-seal`, which calls `ml-referee seal --evaluator <path>`. `cli.main` finds `.ml-referee.toml` and calls `config.load_config` (TOML, trusted: written by you).
+1. You run `ml-referee seal --evaluator <path>` in your terminal, outside the agent's tools. Claude's `/ml-referee:ml-seal` explains this command but does not execute it; the guard denies agent-driven sealing. `cli.main` finds `.ml-referee.toml` and calls `config.load_config` (TOML, trusted: written by you).
 2. `seal.seal` refuses if the store exists. It reads the training file (CSV or Parquet, trusted).
 3. `seal.seal` picks holdout units with a seeded permutation. A unit is a `group` value when set, otherwise a row.
 4. `seal.seal` creates the store with mode `0700` and moves the source file into it as `source.<ext>` (mode `0400`).
@@ -36,7 +36,7 @@ With `--holdout-file PATH`, `seal.seal` validates the file first (same columns a
 1. The harness sends the finished Bash call to `hooks.recorder --harness NAME` (`PostToolUse` or `PostToolUseFailure`). The recorder normalizes the payload and takes `exit_code` and `failed` from it. For Claude Code, it reads `tool_response.exit_code`. For opencode, the plugin forwards `exit_code`.
 2. The recorder proceeds only if `manifest.json` exists in the store. It never creates the store. `recorder._segments` normalizes the command: it removes redirections (`> file`, `>> file`, `2>&1`, `&> file`, `< file`), splits on `&&`, `||`, `;`, `|`, `&`, and newlines, strips leading parentheses, then strips leading `VAR=value` assignments and the wrappers `env`, `time`, `nohup`, `nice`, `setsid`, `exec`, `command`, `sh -c`, `bash -c`, `uv run` (with its flags and flag values), `poetry run`, and `pipenv run`. A `cd x &&` prefix is its own segment, so it never hides the command. An interpreter path or version (`/tmp/venv/bin/python3`, `python3.12`) is reduced to `python`, and the flags `-u`, `-B`, `-O`, `-OO`, `-I`, `-s`, `-S`, and `-E` are dropped.
 3. `recorder.record` matches each `trial_patterns` entry against the whitespace-normalized raw command and against every normalized segment. A pattern matches a candidate on a glob match, on equality, or as a prefix followed by a space. Only the first word of a segment is an interpreter, so `echo python evaluate.py`, `cat evaluate.py`, and `pip install evaluate` do not match `python evaluate.py*`. A command outside the patterns is not recorded.
-4. On a match, `ledger.Ledger.append` writes a `trial` record: command, exit code, failure flag, and the SHA-256 of the train file.
+4. On a match, `ledger.Ledger.append` writes a `trial` record: command, exit code, failure flag, and the SHA-256 of the train file. For Codex, a post-tool payload without authoritative status records both `exit_code` and `failed` as null. Structured integer exit codes and explicit failure events retain known outcomes. The recorder never infers status from stdout; unknown trials still count. Historical records are left untouched.
 5. The recorder never raises. It logs errors to standard error and exits 0.
 
 ## Evaluate
@@ -72,7 +72,7 @@ Audit and claim counts reveal holdout membership to an agent that can run the CL
 
 ## Claim
 
-1. You run `/ml-claim`, which calls `ml-referee claim --predictions <path>`. Optional inputs are `--val-scores` (a JSON list), `--p-value`, and `--out`.
+1. You run `ml-referee claim --predictions <path>` in your terminal, outside the agent's tools. Claude's `/ml-referee:ml-claim` explains this command but does not execute it; the guard denies agent-driven claims. Optional inputs are `--val-scores` (a JSON list), `--p-value`, and `--out`.
 2. `cli.claim` validates `--out` (not a directory, writable, outside the store) before it spends the budget, then runs the audit with no source files to collect findings.
 3. `claim.report.claim` verifies the store, then reads the trial count `N` from the ledger.
 4. `claim.report.claim` calls `runner.run_holdout_eval` with role `claim`, which may spend the reserved budget. This consumes one holdout evaluation, even if you ran `eval` before.

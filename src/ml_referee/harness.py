@@ -42,7 +42,7 @@ class _Ctx:
     cwd: str
     post: bool
     exit_code: int | None = None
-    failed: bool = False
+    failed: bool | None = False
     config_root: str | None = None
 
     def make(self, tool: str, tool_input: dict[str, object]) -> Event:
@@ -315,9 +315,9 @@ def _status(
     *,
     post: bool,
     post_failure: bool,
-) -> tuple[int | None, bool]:
+) -> tuple[int | None, bool | None]:
     exit_code: int | None = None
-    failed = False
+    failed: bool | None = False
     if harness == "opencode":
         code = raw.get("exit_code")
         if isinstance(code, int) and not isinstance(code, bool):
@@ -333,6 +333,8 @@ def _status(
         if isinstance(code, int) and not isinstance(code, bool):
             exit_code = code
             failed = failed or code != 0
+        elif harness == "codex" and post and not post_failure:
+            failed = None
     return exit_code, failed
 
 
